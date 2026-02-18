@@ -260,7 +260,11 @@ export default function DailyChecks() {
       return;
     }
     try {
-      const t = await createChecklistTemplate(activeCompanyId, templateName.trim());
+      const t = await createChecklistTemplate(activeCompanyId, {
+  name: templateName.trim(),
+  type: "custom",
+});
+
       toast({ title: "Template created", description: t.name });
       setTemplateName("");
       await loadTemplates();
@@ -307,9 +311,9 @@ export default function DailyChecks() {
 
     try {
       await createTemplateItem(selectedTemplateId, {
-        label: newItemLabel.trim(),
-        required: newItemRequired,
-      });
+  title: newItemLabel.trim(),
+  is_required: newItemRequired,
+});
       setNewItemLabel("");
       setNewItemRequired(true);
       await loadTemplateItems(selectedTemplateId);
@@ -321,7 +325,7 @@ export default function DailyChecks() {
 
   const onToggleRequired = async (item: ChecklistTemplateItemRow) => {
     try {
-      await updateTemplateItem(item.id, { required: !item.required });
+      await updateTemplateItem(item.id, { is_required: !item.is_required });
       await loadTemplateItems(selectedTemplateId);
     } catch (e: any) {
       console.error(e);
@@ -330,11 +334,11 @@ export default function DailyChecks() {
   };
 
   const onEditItem = async (item: ChecklistTemplateItemRow) => {
-    const next = prompt("Edit item label:", item.label);
+    const next = prompt("Edit item title:", item.title);
     if (!next || !next.trim()) return;
 
     try {
-      await updateTemplateItem(item.id, { label: next.trim() });
+      await updateTemplateItem(item.id, { title: next.trim() });
       await loadTemplateItems(selectedTemplateId);
     } catch (e: any) {
       console.error(e);
@@ -631,9 +635,9 @@ export default function DailyChecks() {
                             className="flex items-center justify-between gap-3 rounded-lg border border-border p-3"
                           >
                             <div className="min-w-0">
-                              <div className="font-medium truncate">{it.label}</div>
+                              <div className="font-medium truncate">{it.title}</div>
                               <div className="text-xs text-muted-foreground">
-                                {it.required ? "Required" : "Optional"}
+                                {it.is_required ? "Required" : "Optional"}
                               </div>
                             </div>
 

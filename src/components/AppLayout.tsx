@@ -25,7 +25,7 @@ type NavItem = {
   icon: any;
   label: string;
   path: string;
-  adminOnly?: boolean; // optional if you want to hide for non-company-admin later
+  adminOnly?: boolean;
 };
 
 const navItems: NavItem[] = [
@@ -35,8 +35,6 @@ const navItems: NavItem[] = [
   { icon: AlertTriangle, label: "Incidents", path: "/app/incidents" },
   { icon: Shield, label: "HACCP", path: "/app/haccp" },
   { icon: GraduationCap, label: "Training", path: "/app/training" },
-
-  // These pages are route-guarded already; adminOnly just controls visibility if you want it.
   { icon: Building2, label: "Locations", path: "/app/sites", adminOnly: true },
   { icon: UsersIcon, label: "Users", path: "/app/users", adminOnly: true },
 ];
@@ -48,7 +46,6 @@ export default function AppLayout() {
   const { signOut, user } = useAuth();
   const { tenant } = useTenant();
 
-  // ---- NEW: profile name (so we can show full name, not email)
   const [displayName, setDisplayName] = useState<string>("");
 
   useEffect(() => {
@@ -60,13 +57,12 @@ export default function AppLayout() {
 
       const { data, error } = await supabase
         .from("profiles")
-        // change full_name to name if that's your column
         .select("full_name")
         .eq("id", user.id)
-        .single();
+        // ✅ prevents 406 when no row exists
+        .maybeSingle();
 
       if (error) {
-        // Don’t block UI if profile missing
         setDisplayName("");
         return;
       }
@@ -77,12 +73,9 @@ export default function AppLayout() {
     run();
   }, [user?.id]);
 
-  const userLabel = useMemo(() => {
-    return displayName?.trim() || user?.email || "Workspace";
-  }, [displayName, user?.email]);
+  const userLabel = useMemo(() => displayName?.trim() || user?.email || "Workspace", [displayName, user?.email]);
 
-  // Optional: if your tenantContext exposes role, you can hide admin items.
-  // For now, keep them visible (route guard will still protect).
+  // keep as you had it (route guards still protect)
   const visibleNav = navItems.filter((x) => !x.adminOnly);
 
   const handleSignOut = async () => {
@@ -91,16 +84,13 @@ export default function AppLayout() {
   };
 
   return (
-    <div className="flex h-dvh bg-background overflow-hidden">
+    <div className="flex h-dvh bg-background">
       <div className="flex-1 flex flex-col min-w-0">
         <AdminOverlayBar />
 
         {/* Mobile header */}
         <header className="md:hidden flex items-center justify-between px-4 py-3 border-b border-border bg-card">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="p-2 -ml-2 rounded-lg hover:bg-muted text-muted-foreground"
-          >
+          <button onClick={() => setSidebarOpen(true)} className="p-2 -ml-2 rounded-lg hover:bg-muted text-muted-foreground">
             <Menu className="w-6 h-6" />
           </button>
 
@@ -108,15 +98,13 @@ export default function AppLayout() {
             <div className="w-7 h-7 rounded-md bg-primary flex items-center justify-center">
               <Shield className="w-4 h-4 text-primary-foreground" />
             </div>
-            <span className="font-semibold text-foreground truncate">
-              {tenant?.companyName ?? "Safyra"}
-            </span>
+            <span className="font-semibold text-foreground truncate">{tenant?.companyName ?? "Safyra"}</span>
           </div>
 
           <div className="w-10" />
         </header>
 
-        <div className="flex flex-1 min-w-0">
+        <div className="flex flex-1 min-w-0 min-h-0">
           {/* Desktop Sidebar */}
           <aside className="hidden md:flex w-64 flex-col border-r border-border bg-card">
             <div className="flex items-center gap-3 px-6 py-5 border-b border-border">
@@ -125,18 +113,14 @@ export default function AppLayout() {
               </div>
               <div className="min-w-0">
                 <h1 className="text-lg font-bold text-foreground tracking-tight truncate">Safyra</h1>
-                <p className="text-xs text-muted-foreground truncate">
-                  {tenant?.companyName ?? "Compliance"}
-                </p>
+                <p className="text-xs text-muted-foreground truncate">{tenant?.companyName ?? "Compliance"}</p>
               </div>
             </div>
 
             <div className="px-3 py-2">
               <div className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2">
                 <Building2 className="w-4 h-4 text-accent-foreground" />
-                <span className="text-sm font-medium text-accent-foreground truncate">
-                  {userLabel}
-                </span>
+                <span className="text-sm font-medium text-accent-foreground truncate">{userLabel}</span>
               </div>
             </div>
 
@@ -149,9 +133,7 @@ export default function AppLayout() {
                     onClick={() => navigate(item.path)}
                     className={cn(
                       "flex items-center gap-3 w-full rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                      active
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                      active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted"
                     )}
                   >
                     <item.icon className="w-5 h-5" />
@@ -173,7 +155,7 @@ export default function AppLayout() {
           </aside>
 
           {/* Page content */}
-          <main className="flex-1 overflow-y-auto">
+          <main className="flex-1 min-h-0 overflow-y-auto">
             <Outlet />
           </main>
         </div>
@@ -201,14 +183,9 @@ export default function AppLayout() {
                     <div className="w-9 h-9 rounded-lg bg-primary flex items-center justify-center">
                       <Shield className="w-5 h-5 text-primary-foreground" />
                     </div>
-                    <h1 className="text-lg font-bold text-foreground truncate">
-                      {tenant?.companyName ?? "Safyra"}
-                    </h1>
+                    <h1 className="text-lg font-bold text-foreground truncate">{tenant?.companyName ?? "Safyra"}</h1>
                   </div>
-                  <button
-                    onClick={() => setSidebarOpen(false)}
-                    className="p-2 rounded-lg hover:bg-muted text-muted-foreground"
-                  >
+                  <button onClick={() => setSidebarOpen(false)} className="p-2 rounded-lg hover:bg-muted text-muted-foreground">
                     <X className="w-5 h-5" />
                   </button>
                 </div>
@@ -216,9 +193,7 @@ export default function AppLayout() {
                 <div className="px-3 py-2">
                   <div className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2">
                     <Building2 className="w-4 h-4 text-accent-foreground" />
-                    <span className="text-sm font-medium text-accent-foreground truncate">
-                      {userLabel}
-                    </span>
+                    <span className="text-sm font-medium text-accent-foreground truncate">{userLabel}</span>
                   </div>
                 </div>
 
@@ -234,9 +209,7 @@ export default function AppLayout() {
                         }}
                         className={cn(
                           "flex items-center gap-3 w-full rounded-lg px-3 py-3 text-sm font-medium transition-colors",
-                          active
-                            ? "bg-primary text-primary-foreground"
-                            : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                          active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted"
                         )}
                       >
                         <item.icon className="w-5 h-5" />

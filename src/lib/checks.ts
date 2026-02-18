@@ -194,6 +194,13 @@ export async function startChecklistRun(params: {
   templateId: string;
   dueAt?: string | null;
 }) {
+  // get current user
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) throw new Error("User not authenticated");
+
   // 1) create run
   const { data: run, error: runErr } = await supabase
     .from("check_entries")
@@ -203,11 +210,13 @@ export async function startChecklistRun(params: {
       template_id: params.templateId,
       status: "open",
       due_at: params.dueAt ?? null,
+      performed_by: user.id, // 🔥 THIS FIXES YOUR ERROR
     })
     .select("id,company_id,site_id,template_id,status,due_at,completed_at,created_at")
     .single();
 
   if (runErr) throw runErr;
+
 
   // 2) fetch template items
   const items = await listTemplateItems(params.templateId);

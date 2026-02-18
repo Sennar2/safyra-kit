@@ -7,6 +7,8 @@ import {
   createTempFoodItem,
   createTempProbe,
   createTempRecord,
+  createDeliveryTempRecord,
+  evaluateTemp,
   getTempTodaySummary,
   listSites,
   listTempAssets,
@@ -15,6 +17,7 @@ import {
   listTempProbes,
   setTempAssetActive,
   setTempExpectationActive,
+  type DeliveryResult,
   type TempAssetRow,
   type TempAssetType,
   type TempExpectationKind,
@@ -24,6 +27,7 @@ import {
   type TempRecordRow,
   type TempTodaySummary,
   type TempKind,
+  type CorrectiveActionPriority,
 } from "@/lib/temps";
 
 import { Button } from "@/components/ui/button";
@@ -37,7 +41,17 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
-import { Thermometer, Plus, RefreshCw, ClipboardList, Settings2, Timer, CheckCircle2, AlertTriangle } from "lucide-react";
+import {
+  Thermometer,
+  Plus,
+  RefreshCw,
+  ClipboardList,
+  Settings2,
+  Timer,
+  CheckCircle2,
+  AlertTriangle,
+  Truck,
+} from "lucide-react";
 
 function localSiteKey(companyId: string) {
   return `safyra_active_site_${companyId}`;
@@ -58,6 +72,23 @@ function minutesLabel(n?: number | null) {
   const h = Math.floor(n / 60);
   const m = n % 60;
   return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+// Radix SelectItem cannot have value=""
+const NO_PROBE = "none";
+
+function severityBadge(sev: "ok" | "warn" | "critical") {
+  if (sev === "ok") return <Badge variant="secondary">OK</Badge>;
+  if (sev === "warn") return <Badge variant="outline" className="border-amber-300 text-amber-700">Warning</Badge>;
+  return <Badge variant="destructive">Action</Badge>;
+}
+
+function toIsoFromDatetimeLocal(v: string) {
+  // v = "2026-02-18T14:00"
+  if (!v) return null;
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
 }
 
 export default function Temps() {
@@ -82,9 +113,20 @@ export default function Temps() {
   const [recordKind, setRecordKind] = useState<TempKind>("fridge");
   const [recordAssetId, setRecordAssetId] = useState<string>("");
   const [recordFoodId, setRecordFoodId] = useState<string>("");
-  const [recordProbeId, setRecordProbeId] = useState<string>("");
+  const [recordProbeId, setRecordProbeId] = useState<string>(NO_PROBE);
   const [recordValue, setRecordValue] = useState<string>("");
   const [recordNotes, setRecordNotes] = useState<string>("");
+
+  // delivery fields
+  const [deliveryItemName, setDeliveryItemName] = useState("");
+  const [deliverySupplier, setDeliverySupplier] = useState("");
+  const [deliveryBatch, setDeliveryBatch] = useState("");
+  const [deliveryResult, setDeliveryResult] = useState<DeliveryResult>("ok");
+
+  // corrective action (for ANY action-triggering record)
+  const [correctiveAction, setCorrectiveAction] = useState("");
+  const [correctivePriority, setCorrectivePriority] = useState<CorrectiveActionPriority>("medium");
+  const [correctiveDueLocal, setCorrectiveDueLocal] = useState(""); // datetime-local
 
   // setup forms
   const [newAssetType, setNewAssetType] = useState<TempAssetType>("fridge");
@@ -107,12 +149,25 @@ export default function Temps() {
     return sites.find((s) => s.id === siteId) ?? sites[0] ?? null;
   }, [sites, siteId]);
 
-  // bootstrap site from localStorage
+  // bootstrap site
   useEffect(() => {
     if (!activeCompanyId) return;
     const saved = localStorage.getItem(localSiteKey(activeCompanyId));
     if (saved) setSiteId(saved);
   }, [activeCompanyId]);
+
+  const clearDeliveryFields = () => {
+    setDeliveryItemName("");
+    setDeliverySupplier("");
+    setDeliveryBatch("");
+    setDeliveryResult("ok");
+  };
+
+  const clearCorrectiveFields = () => {
+    setCorrectiveAction("");
+    setCorrectivePriority("medium");
+    setCorrectiveDueLocal("");
+  };
 
   const loadAll = async (companyId: string, maybeSiteId?: string) => {
     setErr(null);
@@ -122,14 +177,15 @@ export default function Temps() {
       const mappedSites = s.map((x) => ({ id: x.id, name: x.name }));
       setSitesState(mappedSites);
 
-      const targetSiteId = (maybeSiteId && mappedSites.find((x) => x.id === maybeSiteId)?.id) || mappedSites[0]?.id || "";
+      const targetSiteId =
+        (maybeSiteId && mappedSites.find((x) => x.id === maybeSiteId)?.id) || mappedSites[0]?.id || "";
+
       if (targetSiteId && targetSiteId !== siteId) {
         setSiteId(targetSiteId);
         localStorage.setItem(localSiteKey(companyId), targetSiteId);
       }
 
       if (!targetSiteId) {
-        // no sites yet
         setAssets([]);
         setProbes([]);
         setFoods([]);
@@ -154,13 +210,32 @@ export default function Temps() {
       setRecordsToday(sum.recordsToday);
       setSummary(sum);
 
-      // Fix defaults for record form selections
-      const firstAsset = a[0]?.id ?? "";
+      // defaults for record selections
+      const firstAssetForKind =
+        recordKind === "fridge" || recordKind === "freezer"
+          ? a.find((x) => x.type === recordKind)?.id ?? ""
+          : a[0]?.id ?? "";
+
       const firstFood = f[0]?.id ?? "";
       const firstProbe = p[0]?.id ?? "";
-      if (!recordAssetId && firstAsset) setRecordAssetId(firstAsset);
-      if (!recordFoodId && firstFood) setRecordFoodId(firstFood);
-      if (!recordProbeId && firstProbe) setRecordProbeId(firstProbe);
+
+      if ((recordKind === "fridge" || recordKind === "freezer") && (!recordAssetId || !a.some((x) => x.id === recordAssetId))) {
+        if (firstAssetForKind) setRecordAssetId(firstAssetForKind);
+      }
+
+      if (recordKind === "food" && (!recordFoodId || !f.some((x) => x.id === recordFoodId))) {
+        if (firstFood) setRecordFoodId(firstFood);
+      }
+
+      if (!recordProbeId || recordProbeId === NO_PROBE) {
+        setRecordProbeId(firstProbe || NO_PROBE);
+      } else if (recordProbeId !== NO_PROBE && !p.some((x) => x.id === recordProbeId)) {
+        setRecordProbeId(firstProbe || NO_PROBE);
+      }
+
+      if (!expAssetId && a[0]?.id) setExpAssetId(a[0].id);
+      if (!expFoodId && f[0]?.id) setExpFoodId(f[0].id);
+
     } catch (e: any) {
       console.error("Temps loadAll error:", e);
       setErr(e?.message ?? "Failed to load temps");
@@ -175,7 +250,6 @@ export default function Temps() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCompanyId]);
 
-  // when site changes explicitly
   useEffect(() => {
     if (!activeCompanyId) return;
     if (!siteId) return;
@@ -184,12 +258,34 @@ export default function Temps() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [siteId]);
 
+  const valueNumber = recordValue ? Number(recordValue) : NaN;
+
+  const liveEval = useMemo(() => {
+    if (Number.isNaN(valueNumber)) return null;
+
+    if (recordKind === "fridge" || recordKind === "freezer") {
+      return evaluateTemp({ kind: recordKind, valueC: valueNumber });
+    }
+    if (recordKind === "food") {
+      return evaluateTemp({ kind: "food", valueC: valueNumber, foodScotland: false });
+    }
+    if (recordKind === "delivery") {
+      return evaluateTemp({ kind: "delivery", valueC: valueNumber });
+    }
+    return null;
+  }, [recordKind, valueNumber]);
+
+  const actionTriggered =
+    !!liveEval?.requiresAction ||
+    (recordKind === "delivery" && deliveryResult !== "ok");
+
   const canRecord =
     !!activeCompanyId &&
     !!activeSite?.id &&
     !!recordValue &&
     !Number.isNaN(Number(recordValue)) &&
-    (recordKind === "delivery" || recordKind === "food" || recordKind === "fridge" || recordKind === "freezer");
+    (recordKind !== "delivery" || !!deliveryItemName.trim()) &&
+    (!actionTriggered || (!!correctiveAction.trim() && !!correctivePriority && !!correctiveDueLocal));
 
   const onCreateRecord = async () => {
     if (!activeCompanyId || !activeSite?.id) return;
@@ -197,27 +293,65 @@ export default function Temps() {
     const valueC = Number(recordValue);
     if (Number.isNaN(valueC)) return;
 
-    // mapping kind -> required ids
-    const payload: any = {
-      companyId: activeCompanyId,
-      siteId: activeSite.id,
-      kind: recordKind,
-      valueC,
-      notes: recordNotes || null,
-      probeId: recordProbeId || null,
-    };
-
-    if (recordKind === "fridge" || recordKind === "freezer") payload.assetId = recordAssetId || null;
-    if (recordKind === "food") payload.foodItemId = recordFoodId || null;
-
     try {
       setErr(null);
-      await createTempRecord(payload);
+
+      const dueIso = toIsoFromDatetimeLocal(correctiveDueLocal);
+
+      if (actionTriggered && !dueIso) {
+        setErr("Please set a valid due date/time for the corrective action.");
+        return;
+      }
+
+      if (recordKind === "delivery") {
+        await createDeliveryTempRecord({
+  companyId: activeCompanyId,
+  siteId: activeSite.id,
+  valueC,
+  probeId: recordProbeId === NO_PROBE ? null : recordProbeId,
+  itemName: deliveryItemName.trim(),
+  supplier: deliverySupplier.trim() || null,
+  batch: deliveryBatch.trim() || null,
+  deliveryResult,
+  notes: recordNotes || null,
+  correctiveAction: deliveryNeedsAction ? deliveryCorrectiveAction.trim() : null,
+  correctivePriority: "medium", // or from UI
+  correctiveDueAt: null, // or from UI
+});
+
+
+        setRecordValue("");
+        setRecordNotes("");
+        clearDeliveryFields();
+        clearCorrectiveFields();
+        await loadAll(activeCompanyId, activeSite.id);
+        return;
+      }
+
+      // non-delivery record (fridge/freezer/food)
+      await createTempRecord({
+        companyId: activeCompanyId,
+        siteId: activeSite.id,
+        kind: recordKind,
+        valueC,
+        assetId: (recordKind === "fridge" || recordKind === "freezer") ? (recordAssetId || null) : null,
+        foodItemId: recordKind === "food" ? (recordFoodId || null) : null,
+        probeId: recordProbeId === NO_PROBE ? null : recordProbeId,
+        notes: recordNotes || null,
+
+        correctiveActionRequired: actionTriggered,
+        correctiveAction: actionTriggered ? correctiveAction.trim() : null,
+        correctivePriority: actionTriggered ? correctivePriority : null,
+        correctiveDueAt: actionTriggered ? dueIso : null,
+      });
+
       setRecordValue("");
       setRecordNotes("");
+      clearCorrectiveFields();
       await loadAll(activeCompanyId, activeSite.id);
+
     } catch (e: any) {
-      console.error("createTempRecord error:", e);
+      console.error("create record error:", e);
       setErr(e?.message ?? "Failed to record temperature");
     }
   };
@@ -247,7 +381,7 @@ export default function Temps() {
             Temperature Checks
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Record temps, manage fridges/freezers & probes, and optionally enable “due/overdue” expectations.
+            Record temps, manage fridges/freezers & probes, and enable expectations (optional).
           </p>
         </div>
 
@@ -268,11 +402,7 @@ export default function Temps() {
         <div className="flex items-center gap-3">
           <div className="text-xs text-muted-foreground">Active site</div>
           <div className="min-w-[260px]">
-            <Select
-              value={activeSite?.id ?? ""}
-              onValueChange={(val) => setSiteId(val)}
-              disabled={loading || sites.length === 0}
-            >
+            <Select value={activeSite?.id ?? ""} onValueChange={(val) => setSiteId(val)} disabled={loading || sites.length === 0}>
               <SelectTrigger className="h-10">
                 <SelectValue placeholder="Select a site" />
               </SelectTrigger>
@@ -316,19 +446,13 @@ export default function Temps() {
         </div>
       </div>
 
-      {err && (
-        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {err}
-        </div>
-      )}
+      {err && <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{err}</div>}
 
       {(!activeCompanyId || sites.length === 0) && !loading ? (
         <Card className="mt-6">
           <CardHeader>
             <CardTitle>Set up a site first</CardTitle>
-            <CardDescription>
-              Temperature checks are per-site. Create at least one site, then come back here.
-            </CardDescription>
+            <CardDescription>Temperature checks are per-site. Create at least one site, then come back here.</CardDescription>
           </CardHeader>
         </Card>
       ) : (
@@ -354,13 +478,21 @@ export default function Temps() {
               <CardHeader>
                 <CardTitle>Record a temperature</CardTitle>
                 <CardDescription>
-                  Staff can record anytime. “Due/Overdue” is only based on expectations if the company enables them.
+                  If a record triggers an action, you must log a corrective action (with priority + due time).
                 </CardDescription>
               </CardHeader>
+
               <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Type</Label>
-                  <Select value={recordKind} onValueChange={(v) => setRecordKind(v as TempKind)}>
+                  <Select
+                    value={recordKind}
+                    onValueChange={(v) => {
+                      setRecordKind(v as TempKind);
+                      clearCorrectiveFields();
+                      if (v !== "delivery") clearDeliveryFields();
+                    }}
+                  >
                     <SelectTrigger className="h-10">
                       <SelectValue />
                     </SelectTrigger>
@@ -390,9 +522,7 @@ export default function Temps() {
                           ))}
                       </SelectContent>
                     </Select>
-                    <div className="text-xs text-muted-foreground">
-                      Tip: assets can be added/disabled in Setup.
-                    </div>
+                    <div className="text-xs text-muted-foreground">Tip: assets can be added/disabled in Setup.</div>
                   </div>
                 )}
 
@@ -412,8 +542,47 @@ export default function Temps() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <div className="text-xs text-muted-foreground">
-                      Suggested frequencies are recommendations only — the company decides what to enable.
+                  </div>
+                )}
+
+                {recordKind === "delivery" && (
+                  <div className="space-y-2">
+                    <Label className="flex items-center gap-2">
+                      <Truck className="w-4 h-4" /> Item probed
+                    </Label>
+                    <Input
+                      value={deliveryItemName}
+                      onChange={(e) => setDeliveryItemName(e.target.value)}
+                      placeholder="e.g. Chicken thighs, Milk, Calamari"
+                    />
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+                      <div className="space-y-2">
+                        <Label>Supplier (optional)</Label>
+                        <Input value={deliverySupplier} onChange={(e) => setDeliverySupplier(e.target.value)} placeholder="e.g. Bidfood" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Batch/Lot (optional)</Label>
+                        <Input value={deliveryBatch} onChange={(e) => setDeliveryBatch(e.target.value)} placeholder="e.g. LOT1234" />
+                      </div>
+                    </div>
+
+                    <div className="mt-2 space-y-2">
+                      <Label>Result</Label>
+                      <Select value={deliveryResult} onValueChange={(v) => setDeliveryResult(v as DeliveryResult)}>
+                        <SelectTrigger className="h-10">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ok">OK</SelectItem>
+                          <SelectItem value="reject">Reject</SelectItem>
+                          <SelectItem value="quarantine">Quarantine</SelectItem>
+                        </SelectContent>
+                      </Select>
+
+                      <div className="text-xs text-muted-foreground">
+                        Reject/quarantine will always require a corrective action log.
+                      </div>
                     </div>
                   </div>
                 )}
@@ -425,7 +594,7 @@ export default function Temps() {
                       <SelectValue placeholder="Select probe" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">No probe</SelectItem>
+                      <SelectItem value={NO_PROBE}>No probe</SelectItem>
                       {probes.map((p) => (
                         <SelectItem key={p.id} value={p.id}>
                           {p.name} {p.serial ? `(${p.serial})` : ""}
@@ -436,14 +605,75 @@ export default function Temps() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Temperature (°C)</Label>
-                  <Input
-                    value={recordValue}
-                    onChange={(e) => setRecordValue(e.target.value)}
-                    placeholder="e.g. 3.5"
-                    inputMode="decimal"
-                  />
+                  <div className="flex items-end justify-between gap-2">
+                    <Label>Temperature (°C)</Label>
+                    {liveEval ? severityBadge(liveEval.severity) : null}
+                  </div>
+
+                  <Input value={recordValue} onChange={(e) => setRecordValue(e.target.value)} placeholder="e.g. 3.5" inputMode="decimal" />
+
+                  {liveEval ? (
+                    <div className={cn(
+                      "text-xs",
+                      liveEval.severity === "critical"
+                        ? "text-red-600"
+                        : liveEval.severity === "warn"
+                        ? "text-amber-700"
+                        : "text-muted-foreground"
+                    )}>
+                      {liveEval.message}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">
+                      Fridges/Delivery: ≤5 OK, 5–8 warning, ≥8 action • Freezers: ≤-18 OK, -18 to -15 warning, &gt;-15 action • Food: ≥75°C
+                    </div>
+                  )}
                 </div>
+
+                {/* Corrective action block (for ANY action trigger) */}
+                {actionTriggered && (
+                  <div className="md:col-span-2 rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
+                    <div className="font-semibold text-red-700">Corrective action required</div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                      <div className="md:col-span-2 space-y-2">
+                        <Label>What corrective action was taken? *</Label>
+                        <Input
+                          value={correctiveAction}
+                          onChange={(e) => setCorrectiveAction(e.target.value)}
+                          placeholder="e.g. Moved items to another fridge, called engineer, discarded product, informed manager..."
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Priority *</Label>
+                        <Select value={correctivePriority} onValueChange={(v) => setCorrectivePriority(v as CorrectiveActionPriority)}>
+                          <SelectTrigger className="h-10">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="low">Low</SelectItem>
+                            <SelectItem value="medium">Medium</SelectItem>
+                            <SelectItem value="high">High</SelectItem>
+                            <SelectItem value="critical">Critical</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="md:col-span-3 space-y-2">
+                        <Label>Due by (date & time) *</Label>
+                        <Input
+                          type="datetime-local"
+                          value={correctiveDueLocal}
+                          onChange={(e) => setCorrectiveDueLocal(e.target.value)}
+                        />
+                        <div className="text-xs text-red-700">
+                          This will create a dashboard task until it’s completed.
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div className="space-y-2 md:col-span-2">
                   <Label>Notes (optional)</Label>
@@ -452,7 +682,7 @@ export default function Temps() {
 
                 <div className="md:col-span-2 flex items-center justify-between">
                   <div className="text-xs text-muted-foreground">
-                    You can record even if expectations are OFF.
+                    If “Action required” triggers, you must log corrective action + priority + due time.
                   </div>
                   <Button onClick={onCreateRecord} disabled={!canRecord} className="gap-2">
                     <Plus className="w-4 h-4" />
@@ -466,16 +696,14 @@ export default function Temps() {
               <Card>
                 <CardHeader>
                   <CardTitle>Overdue / Due soon</CardTitle>
-                  <CardDescription>
-                    Only shows if expectations are enabled (company choice).
-                  </CardDescription>
+                  <CardDescription>Only shows if expectations are enabled.</CardDescription>
                 </CardHeader>
                 <CardContent>
                   {loading ? (
                     <div className="text-sm text-muted-foreground">Loading…</div>
                   ) : enabledExpectationsCount === 0 ? (
                     <div className="text-sm text-muted-foreground">
-                      Expectations are currently OFF. Enable them in the “Expectations” tab if you want due/overdue tracking.
+                      Expectations are OFF. Enable them in the “Expectations” tab if you want due/overdue tracking.
                     </div>
                   ) : (
                     <div className="space-y-3">
@@ -485,33 +713,23 @@ export default function Temps() {
                           <div className="text-xs text-red-600">
                             {d.last_recorded_at ? `Last: ${fmt(d.last_recorded_at)}` : "No record yet"}
                           </div>
-                          <div className="text-xs text-muted-foreground mt-1">
-                            Every {minutesLabel(d.every_minutes)} (suggestion/setting)
-                          </div>
+                          <div className="text-xs text-muted-foreground mt-1">Every {minutesLabel(d.every_minutes)}</div>
                         </div>
                       ))}
 
-                      {(summary?.overdue?.length ?? 0) === 0 && (
-                        <div className="text-sm text-muted-foreground">No overdue items ✅</div>
-                      )}
+                      {(summary?.overdue?.length ?? 0) === 0 && <div className="text-sm text-muted-foreground">No overdue items ✅</div>}
 
                       <Separator className="my-3" />
 
                       {(summary?.dueSoon ?? []).slice(0, 10).map((d) => (
                         <div key={d.key} className="rounded-lg border border-border p-3">
                           <div className="font-semibold">{d.label}</div>
-                          <div className="text-xs text-muted-foreground">
-                            Due: {d.due_at ? fmt(d.due_at) : "—"}
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-1">
-                            Every {minutesLabel(d.every_minutes)}
-                          </div>
+                          <div className="text-xs text-muted-foreground">Due: {d.due_at ? fmt(d.due_at) : "—"}</div>
+                          <div className="text-xs text-muted-foreground mt-1">Every {minutesLabel(d.every_minutes)}</div>
                         </div>
                       ))}
 
-                      {(summary?.dueSoon?.length ?? 0) === 0 && (
-                        <div className="text-sm text-muted-foreground">Nothing due soon.</div>
-                      )}
+                      {(summary?.dueSoon?.length ?? 0) === 0 && <div className="text-sm text-muted-foreground">Nothing due soon.</div>}
                     </div>
                   )}
                 </CardContent>
@@ -529,27 +747,50 @@ export default function Temps() {
                     <div className="text-sm text-muted-foreground">No records yet today.</div>
                   ) : (
                     <div className="space-y-2">
-                      {recordsToday.slice(0, 20).map((r) => (
-                        <div key={r.id} className="flex items-start justify-between gap-3 rounded-lg border border-border p-3">
-                          <div className="min-w-0">
-                            <div className="font-semibold truncate">
-                              {r.kind.toUpperCase()} •{" "}
-                              {r.kind === "food"
-                                ? r.food?.name ?? "Food"
-                                : r.kind === "fridge" || r.kind === "freezer"
-                                ? r.asset?.name ?? "Asset"
-                                : "Delivery"}
+                      {recordsToday.slice(0, 20).map((r) => {
+                        const ev = evaluateTemp({ kind: r.kind as TempKind, valueC: Number(r.value_c) });
+
+                        const title =
+                          r.kind === "food"
+                            ? `FOOD • ${r.food?.name ?? "Food"}`
+                            : r.kind === "fridge" || r.kind === "freezer"
+                            ? `${r.kind.toUpperCase()} • ${r.asset?.name ?? "Asset"}`
+                            : `DELIVERY • ${r.delivery_item_name ?? "Item"}`;
+
+                        const deliveryMeta =
+                          r.kind === "delivery"
+                            ? `${r.delivery_supplier ? ` • ${r.delivery_supplier}` : ""}${r.delivery_result ? ` • ${String(r.delivery_result).toUpperCase()}` : ""}`
+                            : "";
+
+                        return (
+                          <div key={r.id} className="flex items-start justify-between gap-3 rounded-lg border border-border p-3">
+                            <div className="min-w-0">
+                              <div className="font-semibold truncate">{title}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {fmt(r.recorded_at)}
+                                {r.probe?.name ? ` • Probe: ${r.probe.name}` : ""}
+                                {deliveryMeta}
+                              </div>
+
+                              {r.corrective_action_required ? (
+                                <div className="text-xs text-red-600 mt-1">
+                                  Action required
+                                  {r.corrective_action ? ` • ${r.corrective_action}` : ""}
+                                  {r.corrective_priority ? ` • Priority: ${String(r.corrective_priority).toUpperCase()}` : ""}
+                                  {r.corrective_due_at ? ` • Due: ${fmt(r.corrective_due_at)}` : ""}
+                                </div>
+                              ) : null}
+
+                              {r.notes ? <div className="text-xs text-muted-foreground mt-1">{r.notes}</div> : null}
                             </div>
-                            <div className="text-xs text-muted-foreground">
-                              {fmt(r.recorded_at)} {r.probe?.name ? `• Probe: ${r.probe.name}` : ""}
+
+                            <div className="flex flex-col items-end gap-2 shrink-0">
+                              {severityBadge(ev.severity)}
+                              <Badge variant="outline">{Number(r.value_c).toFixed(1)}°C</Badge>
                             </div>
-                            {r.notes ? <div className="text-xs text-muted-foreground mt-1">{r.notes}</div> : null}
                           </div>
-                          <Badge variant="outline" className="shrink-0">
-                            {Number(r.value_c).toFixed(1)}°C
-                          </Badge>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </CardContent>
@@ -566,6 +807,7 @@ export default function Temps() {
                   Assets (fridges/freezers), probes, and food items. Companies control what exists and what’s active.
                 </CardDescription>
               </CardHeader>
+
               <CardContent className="flex flex-col lg:flex-row gap-4">
                 <div className="flex-1 space-y-4">
                   <div className="rounded-xl border border-border p-4">
@@ -652,14 +894,17 @@ export default function Temps() {
                   <div className="rounded-xl border border-border p-4">
                     <div className="font-semibold">Recommended Defaults</div>
                     <div className="text-xs text-muted-foreground">
-                      Optional helper to prefill assets/food/expectations. Nothing is enforced.
+                      Optional helper to prefill assets/food/expectations.
                     </div>
 
                     <div className="mt-3 flex items-center justify-between gap-3">
-                      <div className="text-xs text-muted-foreground">
-                        Use this if you want a quick starting point.
-                      </div>
-                      <Button variant="outline" onClick={onApplyDefaults} disabled={!activeCompanyId || !activeSite?.id} className="gap-2">
+                      <div className="text-xs text-muted-foreground">Use this if you want a quick starting point.</div>
+                      <Button
+                        variant="outline"
+                        onClick={onApplyDefaults}
+                        disabled={!activeCompanyId || !activeSite?.id}
+                        className="gap-2"
+                      >
                         <Plus className="w-4 h-4" />
                         Apply defaults
                       </Button>
@@ -681,7 +926,10 @@ export default function Temps() {
                           if (!activeCompanyId || !newProbeName.trim()) return;
                           try {
                             setErr(null);
-                            await createTempProbe(activeCompanyId, { name: newProbeName.trim(), serial: newProbeSerial.trim() || null });
+                            await createTempProbe(activeCompanyId, {
+                              name: newProbeName.trim(),
+                              serial: newProbeSerial.trim() || null,
+                            });
                             setNewProbeName("");
                             setNewProbeSerial("");
                             if (activeSite?.id) await loadAll(activeCompanyId, activeSite.id);
@@ -695,31 +943,19 @@ export default function Temps() {
                         Add
                       </Button>
                     </div>
-
-                    <div className="mt-4 space-y-2">
-                      {probes.length === 0 ? (
-                        <div className="text-sm text-muted-foreground">No probes yet.</div>
-                      ) : (
-                        probes.map((p) => (
-                          <div key={p.id} className="rounded-lg border border-border p-3">
-                            <div className="font-semibold">
-                              {p.name} {p.serial ? <span className="text-xs text-muted-foreground">({p.serial})</span> : null}
-                            </div>
-                            <div className="text-xs text-muted-foreground">Created {fmt(p.created_at)}</div>
-                          </div>
-                        ))
-                      )}
-                    </div>
                   </div>
 
                   <div className="rounded-xl border border-border p-4">
                     <div className="font-semibold">Food items to probe</div>
-                    <div className="text-xs text-muted-foreground">
-                      These are items you *may* want to probe. Recommended frequency is a hint only.
-                    </div>
+                    <div className="text-xs text-muted-foreground">Suggested frequency is a hint only.</div>
 
                     <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-2">
-                      <Input value={newFoodName} onChange={(e) => setNewFoodName(e.target.value)} placeholder="Food name" className="md:col-span-2" />
+                      <Input
+                        value={newFoodName}
+                        onChange={(e) => setNewFoodName(e.target.value)}
+                        placeholder="Food name"
+                        className="md:col-span-2"
+                      />
                       <Input value={newFoodCategory} onChange={(e) => setNewFoodCategory(e.target.value)} placeholder="Category (optional)" />
                       <Input
                         value={newFoodRecommendedMin}
@@ -732,7 +968,7 @@ export default function Temps() {
                         <div className="flex items-center gap-2">
                           <Switch checked={newFoodRequired} onCheckedChange={setNewFoodRequired} />
                           <div className="text-sm">
-                            Mark as <span className="font-semibold">required</span> (still not enforced unless expectations enabled)
+                            Mark as <span className="font-semibold">required</span>
                           </div>
                         </div>
                         <Button
@@ -763,33 +999,9 @@ export default function Temps() {
                           Add food item
                         </Button>
                       </div>
-
-                      <div className="md:col-span-4 text-xs text-muted-foreground">
-                        Suggested default for high-risk RTE: every 2 hours (120 mins) — but the company decides.
-                      </div>
-                    </div>
-
-                    <div className="mt-4 space-y-2">
-                      {foods.length === 0 ? (
-                        <div className="text-sm text-muted-foreground">No food items yet.</div>
-                      ) : (
-                        foods.map((f) => (
-                          <div key={f.id} className="rounded-lg border border-border p-3 flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="font-semibold truncate">{f.name}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {f.category ? `${f.category} • ` : ""}
-                                Suggested {minutesLabel(f.recommended_every_minutes)}
-                              </div>
-                            </div>
-                            <div className="flex gap-2">
-                              {f.required ? <Badge variant="secondary">required</Badge> : <Badge variant="outline">optional</Badge>}
-                            </div>
-                          </div>
-                        ))
-                      )}
                     </div>
                   </div>
+
                 </div>
               </CardContent>
             </Card>
@@ -800,16 +1012,12 @@ export default function Temps() {
             <Card>
               <CardHeader>
                 <CardTitle>Expectations (optional)</CardTitle>
-                <CardDescription>
-                  These create “due/overdue” tracking. If disabled, staff can still record temps normally.
-                </CardDescription>
+                <CardDescription>These create “due/overdue” tracking.</CardDescription>
               </CardHeader>
+
               <CardContent className="space-y-4">
                 <div className="rounded-xl border border-border p-4">
                   <div className="font-semibold">Create expectation</div>
-                  <div className="text-xs text-muted-foreground">
-                    Choose what should be checked and how often. Company-controlled — not enforced by the system.
-                  </div>
 
                   <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-2">
                     <Select value={expKind} onValueChange={(v) => setExpKind(v as TempExpectationKind)}>
@@ -853,12 +1061,7 @@ export default function Temps() {
                       </Select>
                     )}
 
-                    <Input
-                      value={expEveryMin}
-                      onChange={(e) => setExpEveryMin(e.target.value)}
-                      placeholder="Every minutes"
-                      inputMode="numeric"
-                    />
+                    <Input value={expEveryMin} onChange={(e) => setExpEveryMin(e.target.value)} placeholder="Every minutes" inputMode="numeric" />
 
                     <Button
                       className="gap-2 md:col-span-1"
@@ -868,7 +1071,6 @@ export default function Temps() {
                         const every = Number(expEveryMin);
                         if (Number.isNaN(every) || every <= 0) return;
 
-                        // validate target
                         if (expKind === "asset" && !expAssetId) return;
                         if (expKind === "food" && !expFoodId) return;
 
@@ -900,18 +1102,10 @@ export default function Temps() {
                       Add
                     </Button>
                   </div>
-
-                  <div className="mt-2 text-xs text-muted-foreground">
-                    Suggestions (optional): high-risk RTE food every 2h (120m); fridges every 4h; deliveries per delivery.
-                    Company can set anything they want.
-                  </div>
                 </div>
 
                 <div className="rounded-xl border border-border p-4">
                   <div className="font-semibold">Existing expectations</div>
-                  <div className="text-xs text-muted-foreground">
-                    Toggle on/off. Turning off removes due/overdue tracking but doesn’t block recording.
-                  </div>
 
                   <div className="mt-3 space-y-2">
                     {expectations.length === 0 ? (
@@ -926,7 +1120,13 @@ export default function Temps() {
                             : "DELIVERY • Delivery";
 
                         return (
-                          <div key={e.id} className={cn("rounded-lg border border-border p-3 flex items-center justify-between gap-3", !e.active && "opacity-70")}>
+                          <div
+                            key={e.id}
+                            className={cn(
+                              "rounded-lg border border-border p-3 flex items-center justify-between gap-3",
+                              !e.active && "opacity-70"
+                            )}
+                          >
                             <div className="min-w-0">
                               <div className="font-semibold truncate">{label}</div>
                               <div className="text-xs text-muted-foreground">
@@ -955,6 +1155,7 @@ export default function Temps() {
                     )}
                   </div>
                 </div>
+
               </CardContent>
             </Card>
           </TabsContent>

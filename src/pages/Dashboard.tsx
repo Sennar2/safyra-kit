@@ -1,14 +1,44 @@
+// src/pages/app/Dashboard.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+
 import { useTenant } from "@/lib/tenantContext";
-import { getDashboardChecklistSummary, type DashboardChecklistSummary, type SiteRow } from "@/lib/checks";
+import {
+  getDashboardChecklistSummary,
+  type DashboardChecklistSummary,
+  type SiteRow,
+} from "@/lib/checks";
+import {
+  getTempTodaySummary,
+  listTempAssets,
+  listOpenCorrectiveActions,
+  completeCorrectiveAction,
+  type CorrectiveActionRow,
+  type TempAssetRow,
+  type TempRecordRow,
+  type TempTodaySummary,
+} from "@/lib/temps";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
 import { cn } from "@/lib/utils";
-import { ClipboardCheck, AlertTriangle, CheckCircle2, Plus, ArrowRight } from "lucide-react";
+import {
+  ClipboardCheck,
+  AlertTriangle,
+  CheckCircle2,
+  Plus,
+  ArrowRight,
+  Thermometer,
+  Snowflake,
+  Utensils,
+  RefreshCw,
+  ListTodo,
+} from "lucide-react";
+
 import type React from "react";
 
 function localSiteKey(companyId: string) {
@@ -21,6 +51,50 @@ function formatDue(dueAt?: string | null) {
   return d.toLocaleString();
 }
 
+function startOfDay(d = new Date()) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function addDays(d: Date, days: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + days);
+  return x;
+}
+
+function inRange(dt: string | null | undefined, a: Date, b: Date) {
+  if (!dt) return false;
+  const t = new Date(dt).getTime();
+  return t >= a.getTime() && t < b.getTime();
+}
+
+function getWindows(now = new Date()) {
+  const dayStart = startOfDay(now);
+
+  const amStart = dayStart;
+  const amEnd = new Date(dayStart);
+  amEnd.setHours(14, 0, 0, 0);
+
+  const pmStart = new Date(dayStart);
+  pmStart.setHours(14, 0, 0, 0);
+
+  // 02:00 next day
+  const pmEnd = new Date(dayStart);
+  pmEnd.setHours(2, 0, 0, 0);
+  pmEnd.setTime(addDays(pmEnd, 1).getTime());
+
+  return { amStart, amEnd, pmStart, pmEnd };
+}
+
+function priorityBadge(priority?: string | null) {
+  const p = (priority ?? "medium").toLowerCase();
+  if (p === "critical") return <Badge variant="destructive">critical</Badge>;
+  if (p === "high") return <Badge variant="outline" className="border-red-200 text-red-700">high</Badge>;
+  if (p === "low") return <Badge variant="outline">low</Badge>;
+  return <Badge variant="secondary">medium</Badge>;
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const { activeCompanyId } = useTenant();
@@ -28,60 +102,160 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
+  // Checklist summary
   const [summary, setSummary] = useState<DashboardChecklistSummary | null>(null);
+
+  // Temps summary
+  const [tempSummary, setTempSummary] = useState<TempTodaySummary | null>(null);
+  const [tempAssets, setTempAssets] = useState<TempAssetRow[]>([]);
+
+  // Corrective actions
+  const [actions, setActions] = useState<CorrectiveActionRow[]>([]);
+  const [actionsLoading, setActionsLoading] = useState(false);
+
+  // Site selection
   const [activeSiteId, setActiveSiteId] = useState<string>("");
 
   const sites = summary?.sites ?? [];
 
   const activeSite: SiteRow | null = useMemo(() => {
     if (!sites.length) return null;
-    return sites.find((s) => s.id === activeSiteId) ?? sites[0];
+    return sites.find((s) => s.id === activeSiteId) ?? sites[0] ?? null;
   }, [sites, activeSiteId]);
 
-  // Bootstrap siteId from localStorage once company is known
   useEffect(() => {
     if (!activeCompanyId) return;
     const saved = localStorage.getItem(localSiteKey(activeCompanyId));
     if (saved) setActiveSiteId(saved);
   }, [activeCompanyId]);
 
-  const load = async (companyId: string, siteId: string) => {
+  const load = async (companyId: string, siteIdGuess: string) => {
     setErr(null);
     setLoading(true);
+
     try {
-      const s = await getDashboardChecklistSummary(companyId, siteId);
+      // 1) Checklist summary
+      const s = await getDashboardChecklistSummary(companyId, siteIdGuess);
       setSummary(s);
 
-      // If current siteId invalid, fallback to first site
-      const validSite = s.sites.find((x) => x.id === siteId) ?? s.sites[0] ?? null;
-      if (validSite && validSite.id !== siteId) {
-        setActiveSiteId(validSite.id);
-        localStorage.setItem(localSiteKey(companyId), validSite.id);
+      const resolvedSite =
+        s.sites.find((x) => x.id === siteIdGuess) ?? s.sites[0] ?? null;
+
+      if (!resolvedSite) {
+        setTempSummary(null);
+        setTempAssets([]);
+        setActions([]);
+        return;
       }
+
+      if (resolvedSite.id !== siteIdGuess) {
+        setActiveSiteId(resolvedSite.id);
+        localStorage.setItem(localSiteKey(companyId), resolvedSite.id);
+      }
+
+      // 2) Temps + Actions
+      const [assets, today, openActions] = await Promise.all([
+        listTempAssets(companyId, resolvedSite.id),
+        getTempTodaySummary(companyId, resolvedSite.id),
+        listOpenCorrectiveActions(companyId, resolvedSite.id, 20),
+      ]);
+
+      setTempAssets(assets);
+      setTempSummary(today);
+      setActions(openActions);
     } catch (e: any) {
       console.error("Dashboard load error:", e);
       setErr(e?.message ?? "Failed to load dashboard");
       setSummary(null);
+      setTempSummary(null);
+      setTempAssets([]);
+      setActions([]);
     } finally {
       setLoading(false);
     }
   };
 
-  // Load dashboard once we have company + a site guess
   useEffect(() => {
     if (!activeCompanyId) return;
-
-    // We don't know sites until we load; but the query needs a siteId.
-    // Strategy:
-    // 1) try saved siteId
-    // 2) if empty, do a lightweight first load using the saved or placeholder, then auto-correct
-    const siteId = activeSiteId || "00000000-0000-0000-0000-000000000000";
-
-    load(activeCompanyId, siteId);
+    const siteGuess = activeSiteId || "00000000-0000-0000-0000-000000000000";
+    load(activeCompanyId, siteGuess);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCompanyId, activeSiteId]);
 
-  const hasSites = sites.length > 0;
+  const hasSites = (sites?.length ?? 0) > 0;
+
+  const tempsKpis = useMemo(() => {
+    const { amStart, amEnd, pmStart, pmEnd } = getWindows(new Date());
+
+    const activeColdAssets = (tempAssets ?? []).filter(
+      (a) => a.active && (a.type === "fridge" || a.type === "freezer")
+    );
+
+    const assetCount = activeColdAssets.length;
+    const targetAssetTemps = assetCount * 2; // AM + PM
+    const targetFoodTemps = 8;
+
+    const records = (tempSummary?.recordsToday ?? []) as TempRecordRow[];
+
+    const assetRecords = records.filter((r) => r.kind === "fridge" || r.kind === "freezer");
+    const foodRecords = records.filter((r) => r.kind === "food");
+
+    const byAssetId = new Map<string, TempRecordRow[]>();
+    for (const r of assetRecords) {
+      if (!r.asset_id) continue;
+      const arr = byAssetId.get(r.asset_id) ?? [];
+      arr.push(r);
+      byAssetId.set(r.asset_id, arr);
+    }
+
+    let amCovered = 0;
+    let pmCovered = 0;
+
+    for (const a of activeColdAssets) {
+      const rs = byAssetId.get(a.id) ?? [];
+      const hasAm = rs.some((r) => inRange(r.recorded_at, amStart, amEnd));
+      const hasPm = rs.some((r) => inRange(r.recorded_at, pmStart, pmEnd));
+      if (hasAm) amCovered += 1;
+      if (hasPm) pmCovered += 1;
+    }
+
+    const amOk = assetCount === 0 ? true : amCovered >= assetCount;
+    const pmOk = assetCount === 0 ? true : pmCovered >= assetCount;
+
+    const assetsOk = assetRecords.length >= targetAssetTemps || (assetCount === 0 && assetRecords.length === 0);
+    const foodOk = foodRecords.length >= targetFoodTemps;
+
+    return {
+      assetCount,
+      targetAssetTemps,
+      targetFoodTemps,
+      assetRecorded: assetRecords.length,
+      foodRecorded: foodRecords.length,
+      amCovered,
+      pmCovered,
+      amOk,
+      pmOk,
+      assetsOk,
+      foodOk,
+    };
+  }, [tempAssets, tempSummary]);
+
+  const openActionsCount = actions.length;
+
+  const onCompleteAction = async (actionId: string) => {
+    if (!activeCompanyId || !activeSite?.id) return;
+    try {
+      setActionsLoading(true);
+      await completeCorrectiveAction(actionId);
+      const refreshed = await listOpenCorrectiveActions(activeCompanyId, activeSite.id, 20);
+      setActions(refreshed);
+    } catch (e: any) {
+      console.error("completeCorrectiveAction error:", e);
+      setErr(e?.message ?? "Failed to complete action");
+    } finally {
+      setActionsLoading(false);
+    }
+  };
 
   // If no sites, show mandatory setup
   if (!loading && summary && !hasSites) {
@@ -91,7 +265,7 @@ export default function Dashboard() {
           <div>
             <h1 className="text-3xl font-extrabold tracking-tight">Dashboard</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              You need at least one site before you can run checklists.
+              You need at least one site before you can run checklists and temps.
             </p>
           </div>
           <Button variant="outline" onClick={() => navigate("/hub")}>
@@ -124,7 +298,7 @@ export default function Dashboard() {
               <div className="min-w-0">
                 <div className="font-semibold">2) Create checklist templates</div>
                 <div className="text-sm text-muted-foreground">
-                  Opening, Closing, Delivery, Cleaning… (we’ll build this page next).
+                  Opening, Closing, Delivery, Cleaning…
                 </div>
               </div>
               <Button variant="outline" disabled>
@@ -149,7 +323,6 @@ export default function Dashboard() {
     );
   }
 
-  // Normal dashboard
   return (
     <div className="p-6 max-w-6xl">
       <div className="flex items-start justify-between gap-4">
@@ -167,6 +340,10 @@ export default function Dashboard() {
           <Button onClick={() => navigate("/app/checks")} className="gap-2">
             <ClipboardCheck className="w-4 h-4" />
             Go to Checklists
+          </Button>
+          <Button onClick={() => navigate("/app/temps")} variant="outline" className="gap-2">
+            <Thermometer className="w-4 h-4" />
+            Temps
           </Button>
         </div>
       </div>
@@ -197,22 +374,26 @@ export default function Dashboard() {
             </Select>
           </div>
 
-          {activeSite?.status && (
-            <Badge variant={activeSite.status === "active" ? "default" : "secondary"}>
-              {activeSite.status}
+          {/* your earlier schema error showed status missing in some DBs — so keep this optional */}
+          {(activeSite as any)?.status ? (
+            <Badge variant={(activeSite as any).status === "active" ? "default" : "secondary"}>
+              {(activeSite as any).status}
             </Badge>
-          )}
+          ) : null}
         </div>
 
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
             onClick={() => {
-              if (!activeCompanyId || !activeSite?.id) return;
-              load(activeCompanyId, activeSite.id);
+              if (!activeCompanyId) return;
+              const siteGuess = activeSite?.id || activeSiteId || "00000000-0000-0000-0000-000000000000";
+              load(activeCompanyId, siteGuess);
             }}
-            disabled={loading || !activeCompanyId || !activeSite?.id}
+            disabled={loading || !activeCompanyId}
+            className="gap-2"
           >
+            <RefreshCw className="w-4 h-4" />
             Refresh
           </Button>
 
@@ -232,7 +413,8 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+      {/* KPI row */}
+      <div className="mt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatCard
           title="Overdue"
           value={summary?.overdue?.length ?? 0}
@@ -254,8 +436,137 @@ export default function Dashboard() {
           tone="ok"
           loading={loading}
         />
+        <StatCard
+          title="Open actions"
+          value={openActionsCount}
+          icon={<ListTodo className="w-5 h-5" />}
+          tone={openActionsCount > 0 ? "danger" : "ok"}
+          loading={loading}
+        />
       </div>
 
+      {/* Corrective actions */}
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ListTodo className="w-5 h-5" />
+            Corrective actions
+          </CardTitle>
+          <CardDescription>
+            Generated when a temperature requires action (e.g. rejected/quarantine deliveries). Complete them to clear the task list.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="text-sm text-muted-foreground">Loading…</div>
+          ) : actions.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No open actions ✅</div>
+          ) : (
+            <div className="space-y-2">
+              {actions.slice(0, 12).map((a) => (
+                <div key={a.id} className="rounded-lg border border-border p-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-semibold truncate">{a.title ?? "Corrective action"}</div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      Due: {formatDue(a.due_at)} • Created: {a.created_at ? new Date(a.created_at).toLocaleString() : "—"}
+                    </div>
+                    {a.details ? <div className="text-xs text-muted-foreground mt-2">{a.details}</div> : null}
+                    <div className="mt-2">{priorityBadge(a.priority)}</div>
+                  </div>
+
+                  <div className="flex flex-col items-end gap-2 shrink-0">
+                    <Button
+                      size="sm"
+                      onClick={() => onCompleteAction(a.id)}
+                      disabled={actionsLoading}
+                    >
+                      Complete
+                    </Button>
+                  </div>
+                </div>
+              ))}
+
+              {actions.length > 12 ? (
+                <div className="text-xs text-muted-foreground pt-2">
+                  Showing 12 of {actions.length}.
+                </div>
+              ) : null}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Temps compliance */}
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Thermometer className="w-5 h-5" />
+            Temps compliance (today)
+          </CardTitle>
+          <CardDescription>
+            Assets target = 2× fridge/freezer count (AM by 2pm + PM by 2am). Food target = 8/day.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {loading ? (
+            <div className="text-sm text-muted-foreground">Loading…</div>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={tempsKpis.assetsOk ? "default" : "destructive"} className="gap-2">
+                  <Snowflake className="w-4 h-4" />
+                  Assets temps {tempsKpis.assetRecorded} / {tempsKpis.targetAssetTemps}
+                </Badge>
+
+                <Badge variant={tempsKpis.foodOk ? "secondary" : "destructive"} className="gap-2">
+                  <Utensils className="w-4 h-4" />
+                  Food temps {tempsKpis.foodRecorded} / {tempsKpis.targetFoodTemps}
+                </Badge>
+
+                <Badge variant="outline">
+                  Active cold assets: {tempsKpis.assetCount}
+                </Badge>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="rounded-lg border border-border p-3">
+                  <div className="text-xs text-muted-foreground">AM window (00:00 → 14:00)</div>
+                  <div className="mt-1 flex items-center justify-between">
+                    <div className="font-semibold">Coverage</div>
+                    <Badge variant={tempsKpis.amOk ? "default" : "destructive"}>
+                      {tempsKpis.amCovered} / {tempsKpis.assetCount}
+                    </Badge>
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-2">
+                    Each fridge/freezer must have ≥1 reading by 2pm.
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border p-3">
+                  <div className="text-xs text-muted-foreground">PM window (14:00 → 02:00)</div>
+                  <div className="mt-1 flex items-center justify-between">
+                    <div className="font-semibold">Coverage</div>
+                    <Badge variant={tempsKpis.pmOk ? "default" : "destructive"}>
+                      {tempsKpis.pmCovered} / {tempsKpis.assetCount}
+                    </Badge>
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-2">
+                    Each fridge/freezer must have ≥1 reading before 2am.
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end">
+                <Button variant="outline" onClick={() => navigate("/app/temps")}>
+                  Open Temps
+                </Button>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Lists */}
       <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>
           <CardHeader>
@@ -287,11 +598,12 @@ export default function Dashboard() {
                   />
                 ))}
 
-                {(summary?.overdue?.length ?? 0) === 0 && (summary?.dueToday?.length ?? 0) === 0 && (
-                  <div className="text-sm text-muted-foreground">
-                    Nothing due right now. You’re on track ✅
-                  </div>
-                )}
+                {(summary?.overdue?.length ?? 0) === 0 &&
+                  (summary?.dueToday?.length ?? 0) === 0 && (
+                    <div className="text-sm text-muted-foreground">
+                      Nothing due right now. You’re on track ✅
+                    </div>
+                  )}
               </div>
             )}
           </CardContent>
@@ -309,12 +621,16 @@ export default function Dashboard() {
               <div className="text-sm text-muted-foreground">No completions yet today.</div>
             ) : (
               <div className="space-y-3">
-                {summary!.completedToday.map((r) => (
-                  <div key={r.id} className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+                {summary!.completedToday.slice(0, 8).map((r) => (
+                  <div
+                    key={r.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-border p-3"
+                  >
                     <div className="min-w-0">
                       <div className="font-semibold truncate">{r.template_name ?? "Checklist"}</div>
                       <div className="text-xs text-muted-foreground">
-                        Completed {r.completed_at ? new Date(r.completed_at).toLocaleString() : "—"}
+                        Completed{" "}
+                        {r.completed_at ? new Date(r.completed_at).toLocaleString() : "—"}
                       </div>
                     </div>
                     <Badge variant="secondary">done</Badge>
@@ -326,7 +642,7 @@ export default function Dashboard() {
             <Separator className="my-4" />
             <div className="flex items-center justify-between gap-2">
               <div className="text-xs text-muted-foreground">
-                Next: we’ll build the Checklists page (templates + schedule + runs).
+                Tip: schedules generate runs automatically — you can still start runs manually.
               </div>
               <Button variant="outline" onClick={() => navigate("/app/checks")}>
                 Open Checklists
@@ -361,9 +677,7 @@ function StatCard(props: {
         <div className="text-xs text-muted-foreground">{title}</div>
         <div className="text-muted-foreground">{icon}</div>
       </div>
-      <div className="mt-2 text-3xl font-extrabold">
-        {loading ? "—" : value}
-      </div>
+      <div className="mt-2 text-3xl font-extrabold">{loading ? "—" : value}</div>
       <div className="mt-1 text-xs text-muted-foreground">
         {tone === "danger" ? "Needs action" : tone === "warn" ? "Due today" : "Good progress"}
       </div>
@@ -386,6 +700,7 @@ function RunRow(props: {
         "w-full text-left rounded-lg border border-border p-3 transition hover:bg-muted/40",
         tone === "danger" && "border-red-200"
       )}
+      type="button"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
