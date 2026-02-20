@@ -1,3 +1,4 @@
+// src/pages/app/Temps.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useTenant } from "@/lib/tenantContext";
 import {
@@ -84,7 +85,6 @@ function severityBadge(sev: "ok" | "warn" | "critical") {
 }
 
 function toIsoFromDatetimeLocal(v: string) {
-  // v = "2026-02-18T14:00"
   if (!v) return null;
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return null;
@@ -94,9 +94,10 @@ function toIsoFromDatetimeLocal(v: string) {
 export default function Temps() {
   const { activeCompanyId } = useTenant();
 
-  const [tab, setTab] = useState<"record" | "setup" | "expectations">("record");
+  const [tab, setTab] = useState<"record" | "setup" | "scheduled">("record");
 
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const [siteId, setSiteId] = useState<string>("");
@@ -117,16 +118,15 @@ export default function Temps() {
   const [recordValue, setRecordValue] = useState<string>("");
   const [recordNotes, setRecordNotes] = useState<string>("");
 
-  // delivery fields
+  // delivery fields (NO batch)
   const [deliveryItemName, setDeliveryItemName] = useState("");
   const [deliverySupplier, setDeliverySupplier] = useState("");
-  const [deliveryBatch, setDeliveryBatch] = useState("");
   const [deliveryResult, setDeliveryResult] = useState<DeliveryResult>("ok");
 
-  // corrective action (for ANY action-triggering record)
+  // corrective action fields
   const [correctiveAction, setCorrectiveAction] = useState("");
-  const [correctivePriority, setCorrectivePriority] = useState<CorrectiveActionPriority>("medium");
-  const [correctiveDueLocal, setCorrectiveDueLocal] = useState(""); // datetime-local
+  const [correctivePriority, setCorrectivePriority] = useState<CorrectiveActionPriority>("medium"); // UI only for now
+  const [actionDueLocal, setActionDueLocal] = useState(""); // datetime-local (REQUIRED if actionTriggered)
 
   // setup forms
   const [newAssetType, setNewAssetType] = useState<TempAssetType>("fridge");
@@ -138,7 +138,7 @@ export default function Temps() {
   const [newFoodRecommendedMin, setNewFoodRecommendedMin] = useState<string>("120");
   const [newFoodRequired, setNewFoodRequired] = useState(false);
 
-  // expectation form
+  // scheduled (expectations)
   const [expKind, setExpKind] = useState<TempExpectationKind>("asset");
   const [expEveryMin, setExpEveryMin] = useState<string>("120");
   const [expAssetId, setExpAssetId] = useState<string>("");
@@ -149,7 +149,6 @@ export default function Temps() {
     return sites.find((s) => s.id === siteId) ?? sites[0] ?? null;
   }, [sites, siteId]);
 
-  // bootstrap site
   useEffect(() => {
     if (!activeCompanyId) return;
     const saved = localStorage.getItem(localSiteKey(activeCompanyId));
@@ -159,14 +158,13 @@ export default function Temps() {
   const clearDeliveryFields = () => {
     setDeliveryItemName("");
     setDeliverySupplier("");
-    setDeliveryBatch("");
     setDeliveryResult("ok");
   };
 
   const clearCorrectiveFields = () => {
     setCorrectiveAction("");
     setCorrectivePriority("medium");
-    setCorrectiveDueLocal("");
+    setActionDueLocal("");
   };
 
   const loadAll = async (companyId: string, maybeSiteId?: string) => {
@@ -210,7 +208,6 @@ export default function Temps() {
       setRecordsToday(sum.recordsToday);
       setSummary(sum);
 
-      // defaults for record selections
       const firstAssetForKind =
         recordKind === "fridge" || recordKind === "freezer"
           ? a.find((x) => x.type === recordKind)?.id ?? ""
@@ -222,7 +219,6 @@ export default function Temps() {
       if ((recordKind === "fridge" || recordKind === "freezer") && (!recordAssetId || !a.some((x) => x.id === recordAssetId))) {
         if (firstAssetForKind) setRecordAssetId(firstAssetForKind);
       }
-
       if (recordKind === "food" && (!recordFoodId || !f.some((x) => x.id === recordFoodId))) {
         if (firstFood) setRecordFoodId(firstFood);
       }
@@ -235,7 +231,6 @@ export default function Temps() {
 
       if (!expAssetId && a[0]?.id) setExpAssetId(a[0].id);
       if (!expFoodId && f[0]?.id) setExpFoodId(f[0].id);
-
     } catch (e: any) {
       console.error("Temps loadAll error:", e);
       setErr(e?.message ?? "Failed to load temps");
@@ -276,8 +271,7 @@ export default function Temps() {
   }, [recordKind, valueNumber]);
 
   const actionTriggered =
-    !!liveEval?.requiresAction ||
-    (recordKind === "delivery" && deliveryResult !== "ok");
+    !!liveEval?.requiresAction || (recordKind === "delivery" && deliveryResult !== "ok");
 
   const canRecord =
     !!activeCompanyId &&
@@ -285,7 +279,8 @@ export default function Temps() {
     !!recordValue &&
     !Number.isNaN(Number(recordValue)) &&
     (recordKind !== "delivery" || !!deliveryItemName.trim()) &&
-    (!actionTriggered || (!!correctiveAction.trim() && !!correctivePriority && !!correctiveDueLocal));
+    (!actionTriggered || (!!correctiveAction.trim() && !!actionDueLocal)) &&
+    !saving;
 
   const onCreateRecord = async () => {
     if (!activeCompanyId || !activeSite?.id) return;
@@ -295,8 +290,9 @@ export default function Temps() {
 
     try {
       setErr(null);
+      setSaving(true);
 
-      const dueIso = toIsoFromDatetimeLocal(correctiveDueLocal);
+      const dueIso = toIsoFromDatetimeLocal(actionDueLocal);
 
       if (actionTriggered && !dueIso) {
         setErr("Please set a valid due date/time for the corrective action.");
@@ -305,20 +301,20 @@ export default function Temps() {
 
       if (recordKind === "delivery") {
         await createDeliveryTempRecord({
-  companyId: activeCompanyId,
-  siteId: activeSite.id,
-  valueC,
-  probeId: recordProbeId === NO_PROBE ? null : recordProbeId,
-  itemName: deliveryItemName.trim(),
-  supplier: deliverySupplier.trim() || null,
-  batch: deliveryBatch.trim() || null,
-  deliveryResult,
-  notes: recordNotes || null,
-  correctiveAction: deliveryNeedsAction ? deliveryCorrectiveAction.trim() : null,
-  correctivePriority: "medium", // or from UI
-  correctiveDueAt: null, // or from UI
-});
+          companyId: activeCompanyId,
+          siteId: activeSite.id,
+          valueC,
+          probeId: recordProbeId === NO_PROBE ? null : recordProbeId,
+          itemName: deliveryItemName.trim(),
+          supplier: deliverySupplier.trim() || null,
+          deliveryResult,
+          notes: recordNotes || null,
 
+          // NEW: task fields
+          requiresAction: actionTriggered,
+          actionNotes: actionTriggered ? correctiveAction.trim() : null,
+          actionDueAt: actionTriggered ? dueIso : null,
+        });
 
         setRecordValue("");
         setRecordNotes("");
@@ -328,7 +324,6 @@ export default function Temps() {
         return;
       }
 
-      // non-delivery record (fridge/freezer/food)
       await createTempRecord({
         companyId: activeCompanyId,
         siteId: activeSite.id,
@@ -339,20 +334,21 @@ export default function Temps() {
         probeId: recordProbeId === NO_PROBE ? null : recordProbeId,
         notes: recordNotes || null,
 
-        correctiveActionRequired: actionTriggered,
-        correctiveAction: actionTriggered ? correctiveAction.trim() : null,
-        correctivePriority: actionTriggered ? correctivePriority : null,
-        correctiveDueAt: actionTriggered ? dueIso : null,
+        // NEW: task fields
+        requiresAction: actionTriggered,
+        actionNotes: actionTriggered ? correctiveAction.trim() : null,
+        actionDueAt: actionTriggered ? dueIso : null,
       });
 
       setRecordValue("");
       setRecordNotes("");
       clearCorrectiveFields();
       await loadAll(activeCompanyId, activeSite.id);
-
     } catch (e: any) {
       console.error("create record error:", e);
       setErr(e?.message ?? "Failed to record temperature");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -381,7 +377,7 @@ export default function Temps() {
             Temperature Checks
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Record temps, manage fridges/freezers & probes, and enable expectations (optional).
+            Record temps, manage fridges/freezers & probes, and enable scheduled checks (optional).
           </p>
         </div>
 
@@ -419,10 +415,10 @@ export default function Temps() {
           {enabledExpectationsCount > 0 ? (
             <Badge variant={overdueCount > 0 ? "destructive" : "secondary"} className="gap-1">
               <Timer className="w-3.5 h-3.5" />
-              Expectations ON ({enabledExpectationsCount})
+              Scheduled ON ({enabledExpectationsCount})
             </Badge>
           ) : (
-            <Badge variant="secondary">Expectations OFF</Badge>
+            <Badge variant="secondary">Scheduled OFF</Badge>
           )}
         </div>
 
@@ -466,19 +462,19 @@ export default function Temps() {
               <Settings2 className="w-4 h-4" />
               Setup
             </TabsTrigger>
-            <TabsTrigger value="expectations" className="gap-2">
+            <TabsTrigger value="scheduled" className="gap-2">
               <Timer className="w-4 h-4" />
-              Expectations
+              Scheduled
             </TabsTrigger>
           </TabsList>
 
-          {/* RECORD */}
           <TabsContent value="record" className="mt-4 space-y-4">
             <Card>
               <CardHeader>
                 <CardTitle>Record a temperature</CardTitle>
                 <CardDescription>
-                  If a record triggers an action, you must log a corrective action (with priority + due time).
+                  If a record triggers an action, it will create a dashboard task until completed.
+                  (Requires task notes + due date/time.)
                 </CardDescription>
               </CardHeader>
 
@@ -562,27 +558,22 @@ export default function Temps() {
                         <Input value={deliverySupplier} onChange={(e) => setDeliverySupplier(e.target.value)} placeholder="e.g. Bidfood" />
                       </div>
                       <div className="space-y-2">
-                        <Label>Batch/Lot (optional)</Label>
-                        <Input value={deliveryBatch} onChange={(e) => setDeliveryBatch(e.target.value)} placeholder="e.g. LOT1234" />
+                        <Label>Result</Label>
+                        <Select value={deliveryResult} onValueChange={(v) => setDeliveryResult(v as DeliveryResult)}>
+                          <SelectTrigger className="h-10">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="ok">OK</SelectItem>
+                            <SelectItem value="reject">Reject</SelectItem>
+                            <SelectItem value="quarantine">Quarantine</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
 
-                    <div className="mt-2 space-y-2">
-                      <Label>Result</Label>
-                      <Select value={deliveryResult} onValueChange={(v) => setDeliveryResult(v as DeliveryResult)}>
-                        <SelectTrigger className="h-10">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="ok">OK</SelectItem>
-                          <SelectItem value="reject">Reject</SelectItem>
-                          <SelectItem value="quarantine">Quarantine</SelectItem>
-                        </SelectContent>
-                      </Select>
-
-                      <div className="text-xs text-muted-foreground">
-                        Reject/quarantine will always require a corrective action log.
-                      </div>
+                    <div className="text-xs text-muted-foreground mt-2">
+                      Reject/quarantine will always require a corrective action task.
                     </div>
                   </div>
                 )}
@@ -613,14 +604,16 @@ export default function Temps() {
                   <Input value={recordValue} onChange={(e) => setRecordValue(e.target.value)} placeholder="e.g. 3.5" inputMode="decimal" />
 
                   {liveEval ? (
-                    <div className={cn(
-                      "text-xs",
-                      liveEval.severity === "critical"
-                        ? "text-red-600"
-                        : liveEval.severity === "warn"
-                        ? "text-amber-700"
-                        : "text-muted-foreground"
-                    )}>
+                    <div
+                      className={cn(
+                        "text-xs",
+                        liveEval.severity === "critical"
+                          ? "text-red-600"
+                          : liveEval.severity === "warn"
+                          ? "text-amber-700"
+                          : "text-muted-foreground"
+                      )}
+                    >
                       {liveEval.message}
                     </div>
                   ) : (
@@ -630,23 +623,35 @@ export default function Temps() {
                   )}
                 </div>
 
-                {/* Corrective action block (for ANY action trigger) */}
                 {actionTriggered && (
                   <div className="md:col-span-2 rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
-                    <div className="font-semibold text-red-700">Corrective action required</div>
+                    <div className="font-semibold text-red-700">Corrective action task will be created</div>
 
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                       <div className="md:col-span-2 space-y-2">
-                        <Label>What corrective action was taken? *</Label>
+                        <Label>Task notes (what needs doing) *</Label>
                         <Input
                           value={correctiveAction}
                           onChange={(e) => setCorrectiveAction(e.target.value)}
-                          placeholder="e.g. Moved items to another fridge, called engineer, discarded product, informed manager..."
+                          placeholder="e.g. Move stock, call engineer, re-check in 30 mins..."
                         />
                       </div>
 
                       <div className="space-y-2">
-                        <Label>Priority *</Label>
+                        <Label>Due by (date & time) *</Label>
+                        <Input
+                          type="datetime-local"
+                          value={actionDueLocal}
+                          onChange={(e) => setActionDueLocal(e.target.value)}
+                        />
+                      </div>
+
+                      <div className="md:col-span-3">
+                        <Separator className="my-2" />
+                      </div>
+
+                      <div className="space-y-2 md:col-span-1">
+                        <Label>Priority</Label>
                         <Select value={correctivePriority} onValueChange={(v) => setCorrectivePriority(v as CorrectiveActionPriority)}>
                           <SelectTrigger className="h-10">
                             <SelectValue />
@@ -658,18 +663,13 @@ export default function Temps() {
                             <SelectItem value="critical">Critical</SelectItem>
                           </SelectContent>
                         </Select>
+                        <div className="text-xs text-muted-foreground">
+                          (Priority saved later once we add DB columns — UI ready.)
+                        </div>
                       </div>
 
-                      <div className="md:col-span-3 space-y-2">
-                        <Label>Due by (date & time) *</Label>
-                        <Input
-                          type="datetime-local"
-                          value={correctiveDueLocal}
-                          onChange={(e) => setCorrectiveDueLocal(e.target.value)}
-                        />
-                        <div className="text-xs text-red-700">
-                          This will create a dashboard task until it’s completed.
-                        </div>
+                      <div className="md:col-span-2 text-xs text-red-700">
+                        This will show on the dashboard until completed, and will be included in inspection reports.
                       </div>
                     </div>
                   </div>
@@ -682,11 +682,11 @@ export default function Temps() {
 
                 <div className="md:col-span-2 flex items-center justify-between">
                   <div className="text-xs text-muted-foreground">
-                    If “Action required” triggers, you must log corrective action + priority + due time.
+                    If “Action required” triggers, due date + notes are mandatory.
                   </div>
                   <Button onClick={onCreateRecord} disabled={!canRecord} className="gap-2">
                     <Plus className="w-4 h-4" />
-                    Save record
+                    {saving ? "Saving…" : "Save record"}
                   </Button>
                 </div>
               </CardContent>
@@ -696,14 +696,14 @@ export default function Temps() {
               <Card>
                 <CardHeader>
                   <CardTitle>Overdue / Due soon</CardTitle>
-                  <CardDescription>Only shows if expectations are enabled.</CardDescription>
+                  <CardDescription>Only shows if scheduled checks are enabled.</CardDescription>
                 </CardHeader>
                 <CardContent>
                   {loading ? (
                     <div className="text-sm text-muted-foreground">Loading…</div>
                   ) : enabledExpectationsCount === 0 ? (
                     <div className="text-sm text-muted-foreground">
-                      Expectations are OFF. Enable them in the “Expectations” tab if you want due/overdue tracking.
+                      Scheduled checks are OFF. Enable them in the “Scheduled” tab if you want due/overdue tracking.
                     </div>
                   ) : (
                     <div className="space-y-3">
@@ -755,12 +755,15 @@ export default function Temps() {
                             ? `FOOD • ${r.food?.name ?? "Food"}`
                             : r.kind === "fridge" || r.kind === "freezer"
                             ? `${r.kind.toUpperCase()} • ${r.asset?.name ?? "Asset"}`
-                            : `DELIVERY • ${r.delivery_item_name ?? "Item"}`;
+                            : `DELIVERY • ${r.delivery_item ?? "Item"}`;
 
                         const deliveryMeta =
                           r.kind === "delivery"
-                            ? `${r.delivery_supplier ? ` • ${r.delivery_supplier}` : ""}${r.delivery_result ? ` • ${String(r.delivery_result).toUpperCase()}` : ""}`
+                            ? `${r.supplier ? ` • ${r.supplier}` : ""}${r.delivery_result ? ` • ${String(r.delivery_result).toUpperCase()}` : ""}`
                             : "";
+
+                        const isAction = !!r.requires_action;
+                        const isDone = isAction && !!r.action_logged;
 
                         return (
                           <div key={r.id} className="flex items-start justify-between gap-3 rounded-lg border border-border p-3">
@@ -772,12 +775,12 @@ export default function Temps() {
                                 {deliveryMeta}
                               </div>
 
-                              {r.corrective_action_required ? (
-                                <div className="text-xs text-red-600 mt-1">
-                                  Action required
-                                  {r.corrective_action ? ` • ${r.corrective_action}` : ""}
-                                  {r.corrective_priority ? ` • Priority: ${String(r.corrective_priority).toUpperCase()}` : ""}
-                                  {r.corrective_due_at ? ` • Due: ${fmt(r.corrective_due_at)}` : ""}
+                              {isAction ? (
+                                <div className={cn("text-xs mt-1", isDone ? "text-emerald-700" : "text-red-600")}>
+                                  {isDone ? "Completed" : "Action required"}
+                                  {r.action_notes ? ` • ${r.action_notes}` : ""}
+                                  {r.action_due_at ? ` • Due: ${fmt(r.action_due_at)}` : ""}
+                                  {isDone && r.action_logged_at ? ` • Done: ${fmt(r.action_logged_at)}` : ""}
                                 </div>
                               ) : null}
 
@@ -785,7 +788,11 @@ export default function Temps() {
                             </div>
 
                             <div className="flex flex-col items-end gap-2 shrink-0">
-                              {severityBadge(ev.severity)}
+                              {isAction ? (
+                                <Badge variant={isDone ? "secondary" : "destructive"}>{isDone ? "Complete" : "Action"}</Badge>
+                              ) : (
+                                severityBadge(ev.severity)
+                              )}
                               <Badge variant="outline">{Number(r.value_c).toFixed(1)}°C</Badge>
                             </div>
                           </div>
@@ -798,7 +805,7 @@ export default function Temps() {
             </div>
           </TabsContent>
 
-          {/* SETUP */}
+          {/* SETUP TAB (unchanged except kept) */}
           <TabsContent value="setup" className="mt-4 space-y-4">
             <Card>
               <CardHeader>
@@ -894,7 +901,7 @@ export default function Temps() {
                   <div className="rounded-xl border border-border p-4">
                     <div className="font-semibold">Recommended Defaults</div>
                     <div className="text-xs text-muted-foreground">
-                      Optional helper to prefill assets/food/expectations.
+                      Optional helper to prefill assets/food/scheduled checks.
                     </div>
 
                     <div className="mt-3 flex items-center justify-between gap-3">
@@ -1001,23 +1008,22 @@ export default function Temps() {
                       </div>
                     </div>
                   </div>
-
                 </div>
               </CardContent>
             </Card>
           </TabsContent>
 
-          {/* EXPECTATIONS */}
-          <TabsContent value="expectations" className="mt-4 space-y-4">
+          {/* SCHEDULED TAB (unchanged) */}
+          <TabsContent value="scheduled" className="mt-4 space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>Expectations (optional)</CardTitle>
+                <CardTitle>Scheduled checks (optional)</CardTitle>
                 <CardDescription>These create “due/overdue” tracking.</CardDescription>
               </CardHeader>
 
               <CardContent className="space-y-4">
                 <div className="rounded-xl border border-border p-4">
-                  <div className="font-semibold">Create expectation</div>
+                  <div className="font-semibold">Create schedule</div>
 
                   <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-2">
                     <Select value={expKind} onValueChange={(v) => setExpKind(v as TempExpectationKind)}>
@@ -1087,7 +1093,7 @@ export default function Temps() {
                           setExpEveryMin("120");
                           await loadAll(activeCompanyId, activeSite.id);
                         } catch (e: any) {
-                          setErr(e?.message ?? "Failed to create expectation");
+                          setErr(e?.message ?? "Failed to create schedule");
                         }
                       }}
                       disabled={
@@ -1105,11 +1111,11 @@ export default function Temps() {
                 </div>
 
                 <div className="rounded-xl border border-border p-4">
-                  <div className="font-semibold">Existing expectations</div>
+                  <div className="font-semibold">Existing schedules</div>
 
                   <div className="mt-3 space-y-2">
                     {expectations.length === 0 ? (
-                      <div className="text-sm text-muted-foreground">No expectations yet.</div>
+                      <div className="text-sm text-muted-foreground">No schedules yet.</div>
                     ) : (
                       expectations.map((e) => {
                         const label =
@@ -1144,7 +1150,7 @@ export default function Temps() {
                                     await setTempExpectationActive(e.id, !!val);
                                     if (activeCompanyId && activeSite?.id) await loadAll(activeCompanyId, activeSite.id);
                                   } catch (ex: any) {
-                                    setErr(ex?.message ?? "Failed to update expectation");
+                                    setErr(ex?.message ?? "Failed to update schedule");
                                   }
                                 }}
                               />
@@ -1155,7 +1161,6 @@ export default function Temps() {
                     )}
                   </div>
                 </div>
-
               </CardContent>
             </Card>
           </TabsContent>

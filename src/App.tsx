@@ -14,7 +14,7 @@ import RequireTenant from "@/components/RequireTenant";
 import RequireCompanyAdmin from "@/components/RequireCompanyAdmin";
 import CompanyDetail from "@/pages/admin/CompanyDetail";
 
-
+import Suppliers from "@/pages/app/Suppliers";
 import AppLayout from "@/components/AppLayout";
 import AdminLayout from "@/components/AdminLayout";
 
@@ -105,6 +105,7 @@ export default function App() {
                       </Route>
 
                       {/* Other modules */}
+                      <Route path="/app/suppliers" element={<Suppliers />} />
                       <Route path="/app/incidents" element={<Incidents />} />
                       <Route path="/app/haccp" element={<HACCP />} />
                       <Route path="/app/training" element={<Training />} />

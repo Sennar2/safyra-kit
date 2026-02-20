@@ -1,9 +1,9 @@
+// src/lib/temps.ts
 import { supabase } from "@/integrations/supabase/client";
 
 export type TempAssetType = "fridge" | "freezer";
 export type TempKind = "fridge" | "freezer" | "food" | "delivery";
 export type TempExpectationKind = "asset" | "food" | "delivery";
-
 export type DeliveryResult = "ok" | "reject" | "quarantine";
 
 export type TempAssetRow = {
@@ -69,17 +69,21 @@ export type TempRecordRow = {
   recorded_at: string;
   created_at: string;
 
-  // Delivery metadata (optional columns)
-  delivery_item_name?: string | null;
-  delivery_supplier?: string | null;
-  delivery_batch?: string | null;
+  recorded_by?: string | null;
+
+  // delivery fields (DB)
+  delivery_item?: string | null;
+  supplier?: string | null;
   delivery_result?: string | null;
 
-  // Corrective action metadata (optional columns)
-  corrective_action_required?: boolean | null;
-  corrective_action?: string | null;
-  corrective_priority?: string | null;
-  corrective_due_at?: string | null;
+  // action fields (DB)
+  requires_action?: boolean | null;
+  action_due_at?: string | null;
+  action_logged?: boolean | null;
+  action_notes?: string | null; // what needed doing
+  action_completed_notes?: string | null; // what was done ✅
+  action_logged_at?: string | null;
+  action_logged_by?: string | null;
 
   asset?: { id: string; name: string; type: TempAssetType } | null;
   food?: { id: string; name: string } | null;
@@ -87,35 +91,39 @@ export type TempRecordRow = {
 };
 
 export type CorrectiveActionPriority = "low" | "medium" | "high" | "critical";
-export type CorrectiveActionStatus = "open" | "completed" | "cancelled";
 
 export type CorrectiveActionRow = {
-  id: string;
+  id: string; // temp_records.id
   company_id: string;
   site_id: string;
 
-  source: string;
-  source_id: string | null;
-
   title: string;
-  details: string | null;
+  details: string | null; // what needed doing (mapped from action_notes)
 
-  priority: CorrectiveActionPriority | string;
   due_at: string | null;
+  priority: CorrectiveActionPriority;
 
-  status: CorrectiveActionStatus | string;
   created_at: string;
-  created_by: string | null;
+  recorded_at: string;
 
-  completed_at: string | null;
-  completed_by: string | null;
+  action_logged: boolean;
+  action_logged_at: string | null;
+  action_notes: string | null; // what needed doing
+  action_completed_notes?: string | null; // what was done ✅
+
+  recorded_by: string | null;
+  action_logged_by: string | null;
 };
 
-/** Helpers */
-export function startOfTodayISO() {
+function startOfTodayISO() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   return d.toISOString();
+}
+
+async function currentUserId() {
+  const { data } = await supabase.auth.getUser();
+  return data.user?.id ?? null;
 }
 
 /** =========================
@@ -138,24 +146,69 @@ export function evaluateTemp(
   const v = input.valueC;
 
   if (input.kind === "freezer") {
-    const standard = "Freezers: ≤ -18°C OK, -18 to -15°C warning, > -15°C action";
-    if (v <= -18) return { severity: "ok", requiresAction: false, message: `OK (${v.toFixed(1)}°C).`, standard };
-    if (v > -18 && v <= -15) return { severity: "warn", requiresAction: false, message: `Warning: ${v.toFixed(1)}°C (monitor, recheck).`, standard };
-    return { severity: "critical", requiresAction: true, message: `Action required: ${v.toFixed(1)}°C (too warm).`, standard };
+    const standard =
+      "Freezers: ≤ -18°C OK, -18 to -15°C warning, > -15°C action";
+    if (v <= -18)
+      return {
+        severity: "ok",
+        requiresAction: false,
+        message: `OK (${v.toFixed(1)}°C).`,
+        standard,
+      };
+    if (v > -18 && v <= -15)
+      return {
+        severity: "warn",
+        requiresAction: false,
+        message: `Warning: ${v.toFixed(1)}°C (monitor, recheck).`,
+        standard,
+      };
+    return {
+      severity: "critical",
+      requiresAction: true,
+      message: `Action required: ${v.toFixed(1)}°C (too warm).`,
+      standard,
+    };
   }
 
   if (input.kind === "fridge" || input.kind === "delivery") {
     const standard = "Chilled: ≤ 5°C OK, 5–8°C warning, ≥ 8°C action";
-    if (v <= 5) return { severity: "ok", requiresAction: false, message: `OK (${v.toFixed(1)}°C).`, standard };
-    if (v > 5 && v < 8) return { severity: "warn", requiresAction: false, message: `Warning: ${v.toFixed(1)}°C (monitor, recheck).`, standard };
-    return { severity: "critical", requiresAction: true, message: `Action required: ${v.toFixed(1)}°C (too warm).`, standard };
+    if (v <= 5)
+      return {
+        severity: "ok",
+        requiresAction: false,
+        message: `OK (${v.toFixed(1)}°C).`,
+        standard,
+      };
+    if (v > 5 && v < 8)
+      return {
+        severity: "warn",
+        requiresAction: false,
+        message: `Warning: ${v.toFixed(1)}°C (monitor, recheck).`,
+        standard,
+      };
+    return {
+      severity: "critical",
+      requiresAction: true,
+      message: `Action required: ${v.toFixed(1)}°C (too warm).`,
+      standard,
+    };
   }
 
-  // food
   const target = input.foodScotland ? 82 : 75;
   const standard = `Food core temp: ≥ ${target}°C required`;
-  if (v >= target) return { severity: "ok", requiresAction: false, message: `OK (${v.toFixed(1)}°C).`, standard };
-  return { severity: "critical", requiresAction: true, message: `Action required: ${v.toFixed(1)}°C (below ${target}°C).`, standard };
+  if (v >= target)
+    return {
+      severity: "ok",
+      requiresAction: false,
+      message: `OK (${v.toFixed(1)}°C).`,
+      standard,
+    };
+  return {
+    severity: "critical",
+    requiresAction: true,
+    message: `Action required: ${v.toFixed(1)}°C (below ${target}°C).`,
+    standard,
+  };
 }
 
 /** =========================
@@ -164,17 +217,21 @@ export function evaluateTemp(
 export async function listSites(companyId: string) {
   const { data, error } = await supabase
     .from("sites")
-    // If "status" doesn't exist in your DB, remove it from select.
     .select("id,name,company_id,status,created_at")
     .eq("company_id", companyId)
     .order("created_at", { ascending: true });
 
   if (error) throw error;
-  return (data ?? []) as { id: string; name: string; company_id: string; status?: string | null }[];
+  return (data ?? []) as {
+    id: string;
+    name: string;
+    company_id: string;
+    status?: string | null;
+  }[];
 }
 
 /** =========================
- *  ASSETS
+ *  ASSETS / PROBES / FOODS / EXPECTATIONS
  *  ========================= */
 export async function listTempAssets(companyId: string, siteId: string) {
   const { data, error } = await supabase
@@ -225,13 +282,12 @@ export async function setTempAssetActive(assetId: string, active: boolean) {
   return data as TempAssetRow;
 }
 
-/** =========================
- *  PROBES
- *  ========================= */
 export async function listTempProbes(companyId: string) {
   const { data, error } = await supabase
     .from("temp_probes")
-    .select("id,company_id,name,serial,active,last_calibrated_at,next_calibration_due_at,created_at")
+    .select(
+      "id,company_id,name,serial,active,last_calibrated_at,next_calibration_due_at,created_at"
+    )
     .eq("company_id", companyId)
     .order("created_at", { ascending: false });
 
@@ -239,10 +295,17 @@ export async function listTempProbes(companyId: string) {
   return (data ?? []) as TempProbeRow[];
 }
 
-export async function createTempProbe(companyId: string, input: { name: string; serial?: string | null }) {
+export async function createTempProbe(
+  companyId: string,
+  input: { name: string; serial?: string | null }
+) {
   const { data, error } = await supabase
     .from("temp_probes")
-    .insert({ company_id: companyId, name: input.name, serial: input.serial ?? null })
+    .insert({
+      company_id: companyId,
+      name: input.name,
+      serial: input.serial ?? null,
+    })
     .select("id,company_id,name,serial,active,last_calibrated_at,next_calibration_due_at,created_at")
     .single();
 
@@ -250,9 +313,6 @@ export async function createTempProbe(companyId: string, input: { name: string; 
   return data as TempProbeRow;
 }
 
-/** =========================
- *  FOOD ITEMS
- *  ========================= */
 export async function listTempFoodItems(companyId: string) {
   const { data, error } = await supabase
     .from("temp_food_items")
@@ -264,12 +324,15 @@ export async function listTempFoodItems(companyId: string) {
   return (data ?? []) as TempFoodItemRow[];
 }
 
-export async function createTempFoodItem(companyId: string, input: {
-  name: string;
-  category?: string | null;
-  recommended_every_minutes?: number;
-  required?: boolean;
-}) {
+export async function createTempFoodItem(
+  companyId: string,
+  input: {
+    name: string;
+    category?: string | null;
+    recommended_every_minutes?: number;
+    required?: boolean;
+  }
+) {
   const { data, error } = await supabase
     .from("temp_food_items")
     .insert({
@@ -286,9 +349,6 @@ export async function createTempFoodItem(companyId: string, input: {
   return data as TempFoodItemRow;
 }
 
-/** =========================
- *  EXPECTATIONS
- *  ========================= */
 export async function listTempExpectations(companyId: string, siteId: string) {
   const { data, error } = await supabase
     .from("temp_expectations")
@@ -335,7 +395,10 @@ export async function createTempExpectation(input: {
   return data as TempExpectationRow;
 }
 
-export async function setTempExpectationActive(expectationId: string, active: boolean) {
+export async function setTempExpectationActive(
+  expectationId: string,
+  active: boolean
+) {
   const { data, error } = await supabase
     .from("temp_expectations")
     .update({ active })
@@ -352,75 +415,6 @@ export async function setTempExpectationActive(expectationId: string, active: bo
 }
 
 /** =========================
- *  CORRECTIVE ACTIONS (TASKS)
- *  ========================= */
-export async function createCorrectiveAction(input: {
-  companyId: string;
-  siteId: string;
-  title: string;
-  details?: string | null;
-  priority?: CorrectiveActionPriority;
-  dueAt?: string | null;
-  source?: string;
-  sourceId?: string | null;
-}) {
-  const userId = (await supabase.auth.getUser()).data.user?.id ?? null;
-
-  const { data, error } = await supabase
-    .from("corrective_actions")
-    .insert({
-      company_id: input.companyId,
-      site_id: input.siteId,
-      source: input.source ?? "temp_record",
-      source_id: input.sourceId ?? null,
-      title: input.title,
-      details: input.details ?? null,
-      priority: input.priority ?? "medium",
-      due_at: input.dueAt ?? null,
-      status: "open",
-      created_by: userId,
-    })
-    .select("id,company_id,site_id,source,source_id,title,details,priority,due_at,status,created_at,created_by,completed_at,completed_by")
-    .single();
-
-  if (error) throw error;
-  return data as CorrectiveActionRow;
-}
-
-export async function listOpenCorrectiveActions(companyId: string, siteId: string, limit = 50) {
-  const { data, error } = await supabase
-    .from("corrective_actions")
-    .select("id,company_id,site_id,source,source_id,title,details,priority,due_at,status,created_at,created_by,completed_at,completed_by")
-    .eq("company_id", companyId)
-    .eq("site_id", siteId)
-    .eq("status", "open")
-    .order("due_at", { ascending: true, nullsFirst: false })
-    .order("created_at", { ascending: false })
-    .limit(limit);
-
-  if (error) throw error;
-  return (data ?? []) as CorrectiveActionRow[];
-}
-
-export async function completeCorrectiveAction(actionId: string) {
-  const userId = (await supabase.auth.getUser()).data.user?.id ?? null;
-
-  const { data, error } = await supabase
-    .from("corrective_actions")
-    .update({
-      status: "completed",
-      completed_at: new Date().toISOString(),
-      completed_by: userId,
-    })
-    .eq("id", actionId)
-    .select("id,company_id,site_id,source,source_id,title,details,priority,due_at,status,created_at,created_by,completed_at,completed_by")
-    .single();
-
-  if (error) throw error;
-  return data as CorrectiveActionRow;
-}
-
-/** =========================
  *  RECORDS
  *  ========================= */
 export async function createTempRecord(input: {
@@ -433,18 +427,18 @@ export async function createTempRecord(input: {
   probeId?: string | null;
   notes?: string | null;
 
-  // delivery meta (optional)
-  deliveryItemName?: string | null;
-  deliverySupplier?: string | null;
-  deliveryBatch?: string | null;
-  deliveryResult?: string | null;
+  // delivery fields (DB names)
+  deliveryItem?: string | null;
+  supplier?: string | null;
+  deliveryResult?: DeliveryResult | string | null;
 
-  // corrective meta (optional)
-  correctiveActionRequired?: boolean;
-  correctiveAction?: string | null;
-  correctivePriority?: string | null;
-  correctiveDueAt?: string | null;
+  // action fields (DB names)
+  requiresAction?: boolean;
+  actionNotes?: string | null; // what needed doing
+  actionDueAt?: string | null;
 }) {
+  const userId = await currentUserId();
+
   const payload: any = {
     company_id: input.companyId,
     site_id: input.siteId,
@@ -455,16 +449,21 @@ export async function createTempRecord(input: {
     probe_id: input.probeId ?? null,
     notes: input.notes ?? null,
     recorded_at: new Date().toISOString(),
+    recorded_by: userId,
 
-    delivery_item_name: input.deliveryItemName ?? null,
-    delivery_supplier: input.deliverySupplier ?? null,
-    delivery_batch: input.deliveryBatch ?? null,
+    // delivery
+    delivery_item: input.deliveryItem ?? null,
+    supplier: input.supplier ?? null,
     delivery_result: input.deliveryResult ?? null,
 
-    corrective_action_required: input.correctiveActionRequired ?? false,
-    corrective_action: input.correctiveAction ?? null,
-    corrective_priority: input.correctivePriority ?? null,
-    corrective_due_at: input.correctiveDueAt ?? null,
+    // actions
+    requires_action: input.requiresAction ?? false,
+    action_notes: input.actionNotes ?? null,
+    action_due_at: input.actionDueAt ?? null,
+    action_logged: false,
+    action_logged_at: null,
+    action_logged_by: null,
+    action_completed_notes: null,
   };
 
   const { data, error } = await supabase
@@ -472,8 +471,9 @@ export async function createTempRecord(input: {
     .insert(payload)
     .select(`
       id,company_id,site_id,kind,asset_id,food_item_id,probe_id,value_c,notes,recorded_at,created_at,
-      delivery_item_name,delivery_supplier,delivery_batch,delivery_result,
-      corrective_action_required,corrective_action,corrective_priority,corrective_due_at,
+      recorded_by,
+      delivery_item,supplier,delivery_result,
+      requires_action,action_due_at,action_logged,action_notes,action_completed_notes,action_logged_at,action_logged_by,
       asset:temp_assets(id,name,type),
       food:temp_food_items(id,name),
       probe:temp_probes(id,name)
@@ -484,76 +484,49 @@ export async function createTempRecord(input: {
   return data as TempRecordRow;
 }
 
-/**
- * Delivery-specific creator:
- * - always writes temp_records row
- * - if action required => also writes corrective_actions task
- */
 export async function createDeliveryTempRecord(input: {
   companyId: string;
   siteId: string;
   valueC: number;
-
   probeId?: string | null;
   notes?: string | null;
 
   itemName: string;
   supplier?: string | null;
-  batch?: string | null;
   deliveryResult: DeliveryResult;
 
-  correctiveAction?: string | null;
-  correctivePriority?: CorrectiveActionPriority;
-  correctiveDueAt?: string | null;
+  requiresAction: boolean;
+  actionNotes?: string | null;
+  actionDueAt?: string | null;
 }) {
-  const evalRes = evaluateTemp({ kind: "delivery", valueC: input.valueC });
-  const requiresAction = evalRes.requiresAction || input.deliveryResult !== "ok";
-
-  const record = await createTempRecord({
+  return createTempRecord({
     companyId: input.companyId,
     siteId: input.siteId,
     kind: "delivery",
     valueC: input.valueC,
     probeId: input.probeId ?? null,
     notes: input.notes ?? null,
-    deliveryItemName: input.itemName,
-    deliverySupplier: input.supplier ?? null,
-    deliveryBatch: input.batch ?? null,
+    deliveryItem: input.itemName,
+    supplier: input.supplier ?? null,
     deliveryResult: input.deliveryResult,
-    correctiveActionRequired: requiresAction,
-    correctiveAction: requiresAction ? (input.correctiveAction ?? null) : null,
-    correctivePriority: requiresAction ? (input.correctivePriority ?? "medium") : null,
-    correctiveDueAt: requiresAction ? (input.correctiveDueAt ?? null) : null,
+    requiresAction: input.requiresAction,
+    actionNotes: input.actionNotes ?? null,
+    actionDueAt: input.actionDueAt ?? null,
   });
-
-  if (requiresAction) {
-    await createCorrectiveAction({
-      companyId: input.companyId,
-      siteId: input.siteId,
-      source: "temp_record",
-      sourceId: record.id,
-      title: `Delivery temp action: ${input.itemName}`,
-      details:
-        `Result: ${input.deliveryResult.toUpperCase()}\n` +
-        `Temp: ${input.valueC.toFixed(1)}°C\n` +
-        `${input.supplier ? `Supplier: ${input.supplier}\n` : ""}` +
-        `${input.batch ? `Batch/Lot: ${input.batch}\n` : ""}` +
-        `${input.correctiveAction ? `Corrective: ${input.correctiveAction}` : "Corrective: (not provided)"}`,
-      priority: input.correctivePriority ?? "medium",
-      dueAt: input.correctiveDueAt ?? null,
-    });
-  }
-
-  return record;
 }
 
-export async function listTempRecordsToday(companyId: string, siteId: string, limit = 200) {
+export async function listTempRecordsToday(
+  companyId: string,
+  siteId: string,
+  limit = 200
+) {
   const { data, error } = await supabase
     .from("temp_records")
     .select(`
       id,company_id,site_id,kind,asset_id,food_item_id,probe_id,value_c,notes,recorded_at,created_at,
-      delivery_item_name,delivery_supplier,delivery_batch,delivery_result,
-      corrective_action_required,corrective_action,corrective_priority,corrective_due_at,
+      recorded_by,
+      delivery_item,supplier,delivery_result,
+      requires_action,action_due_at,action_logged,action_notes,action_completed_notes,action_logged_at,action_logged_by,
       asset:temp_assets(id,name,type),
       food:temp_food_items(id,name),
       probe:temp_probes(id,name)
@@ -566,6 +539,166 @@ export async function listTempRecordsToday(companyId: string, siteId: string, li
 
   if (error) throw error;
   return (data ?? []) as TempRecordRow[];
+}
+
+/** =========================
+ *  DASHBOARD ACTIONS (from temp_records)
+ *  ========================= */
+export async function listOpenCorrectiveActions(
+  companyId: string,
+  siteId: string,
+  limit = 50
+) {
+  const { data, error } = await supabase
+    .from("temp_records")
+    .select(`
+      id,company_id,site_id,kind,asset_id,food_item_id,value_c,notes,recorded_at,created_at,
+      recorded_by,
+      delivery_item,supplier,delivery_result,
+      requires_action,action_due_at,action_logged,action_notes,action_completed_notes,action_logged_at,action_logged_by,
+      asset:temp_assets(id,name,type),
+      food:temp_food_items(id,name)
+    `)
+    .eq("company_id", companyId)
+    .eq("site_id", siteId)
+    .eq("requires_action", true)
+    .eq("action_logged", false)
+    .order("action_due_at", { ascending: true, nullsFirst: false })
+    .order("recorded_at", { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+
+  const rows = (data ?? []) as TempRecordRow[];
+
+  return rows.map((r) => {
+    const title =
+      r.kind === "food"
+        ? `Action required: FOOD • ${r.food?.name ?? "Food"}`
+        : r.kind === "fridge" || r.kind === "freezer"
+        ? `Action required: ${r.kind.toUpperCase()} • ${r.asset?.name ?? "Asset"}`
+        : `Action required: DELIVERY • ${r.delivery_item ?? "Item"}`;
+
+    const details =
+      r.action_notes ??
+      r.notes ??
+      (r.kind === "delivery"
+        ? `${r.supplier ? `Supplier: ${r.supplier}. ` : ""}${
+            r.delivery_result
+              ? `Result: ${String(r.delivery_result).toUpperCase()}.`
+              : ""
+          }`
+        : null);
+
+    return {
+      id: r.id,
+      company_id: r.company_id,
+      site_id: r.site_id,
+      title,
+      details,
+      due_at: r.action_due_at ?? null,
+      priority: "medium",
+      created_at: r.created_at,
+      recorded_at: r.recorded_at,
+      action_logged: !!r.action_logged,
+      action_logged_at: r.action_logged_at ?? null,
+      action_notes: r.action_notes ?? null,
+      action_completed_notes: r.action_completed_notes ?? null,
+      recorded_by: (r as any).recorded_by ?? null,
+      action_logged_by: r.action_logged_by ?? null,
+    } as CorrectiveActionRow;
+  });
+}
+
+export async function listRecentlyCompletedCorrectiveActions(
+  companyId: string,
+  siteId: string,
+  limit = 10
+) {
+  const { data, error } = await supabase
+    .from("temp_records")
+    .select(`
+      id,company_id,site_id,kind,asset_id,food_item_id,value_c,notes,recorded_at,created_at,
+      recorded_by,
+      delivery_item,supplier,delivery_result,
+      requires_action,action_due_at,action_logged,action_notes,action_completed_notes,action_logged_at,action_logged_by,
+      asset:temp_assets(id,name,type),
+      food:temp_food_items(id,name)
+    `)
+    .eq("company_id", companyId)
+    .eq("site_id", siteId)
+    .eq("requires_action", true)
+    .eq("action_logged", true)
+    .order("action_logged_at", { ascending: false, nullsFirst: false })
+    .limit(limit);
+
+  if (error) throw error;
+
+  const rows = (data ?? []) as TempRecordRow[];
+
+  return rows.map((r) => {
+    const title =
+      r.kind === "food"
+        ? `Completed: FOOD • ${r.food?.name ?? "Food"}`
+        : r.kind === "fridge" || r.kind === "freezer"
+        ? `Completed: ${r.kind.toUpperCase()} • ${r.asset?.name ?? "Asset"}`
+        : `Completed: DELIVERY • ${r.delivery_item ?? "Item"}`;
+
+    const details =
+      r.action_notes ??
+      r.notes ??
+      (r.kind === "delivery"
+        ? `${r.supplier ? `Supplier: ${r.supplier}. ` : ""}${
+            r.delivery_result
+              ? `Result: ${String(r.delivery_result).toUpperCase()}.`
+              : ""
+          }`
+        : null);
+
+    return {
+      id: r.id,
+      company_id: r.company_id,
+      site_id: r.site_id,
+      title,
+      details,
+      due_at: r.action_due_at ?? null,
+      priority: "medium",
+      created_at: r.created_at,
+      recorded_at: r.recorded_at,
+      action_logged: true,
+      action_logged_at: r.action_logged_at ?? null,
+      action_notes: r.action_notes ?? null,
+      action_completed_notes: r.action_completed_notes ?? null,
+      recorded_by: (r as any).recorded_by ?? null,
+      action_logged_by: r.action_logged_by ?? null,
+    } as CorrectiveActionRow;
+  });
+}
+
+export async function completeCorrectiveAction(
+  tempRecordId: string,
+  completedNotes?: string | null
+) {
+  const userId = await currentUserId();
+
+  const { data, error } = await supabase
+    .from("temp_records")
+    .update({
+      action_logged: true,
+      action_logged_at: new Date().toISOString(),
+      action_logged_by: userId,
+      action_completed_notes: completedNotes ?? null,
+    })
+    .eq("id", tempRecordId)
+    .select(`
+      id,company_id,site_id,
+      requires_action,action_logged,action_logged_at,action_logged_by,
+      action_notes,action_completed_notes,action_due_at
+    `)
+    .single();
+
+  if (error) throw error;
+  return data;
 }
 
 /** =========================
@@ -589,7 +722,10 @@ export type TempTodaySummary = {
   dueSoon: TempDueRow[];
 };
 
-export async function getTempTodaySummary(companyId: string, siteId: string): Promise<TempTodaySummary> {
+export async function getTempTodaySummary(
+  companyId: string,
+  siteId: string
+): Promise<TempTodaySummary> {
   const [sites, expectations, recordsToday] = await Promise.all([
     listSites(companyId),
     listTempExpectations(companyId, siteId),
@@ -631,9 +767,6 @@ export async function getTempTodaySummary(companyId: string, siteId: string): Pr
         dueAt = new Date(dueMs).toISOString();
         const diffMin = Math.floor((now - dueMs) / 60_000);
         minutesOverdue = diffMin > 0 ? diffMin : 0;
-      } else {
-        dueAt = null;
-        minutesOverdue = null;
       }
 
       const label =
@@ -654,7 +787,9 @@ export async function getTempTodaySummary(companyId: string, siteId: string): Pr
       };
     });
 
-  const overdue = dueRows.filter((d) => !d.last_recorded_at || (d.due_at && new Date(d.due_at).getTime() < now));
+  const overdue = dueRows.filter(
+    (d) => !d.last_recorded_at || (d.due_at && new Date(d.due_at).getTime() < now)
+  );
   const dueSoon = dueRows
     .filter((d) => d.last_recorded_at && d.due_at && new Date(d.due_at).getTime() >= now)
     .sort((a, b) => new Date(a.due_at!).getTime() - new Date(b.due_at!).getTime())

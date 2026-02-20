@@ -13,6 +13,7 @@ import {
   LogOut,
   Users as UsersIcon,
   Thermometer,
+  Truck,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -32,6 +33,7 @@ const navItems: NavItem[] = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/app" },
   { icon: ClipboardCheck, label: "Daily Checks", path: "/app/checks" },
   { icon: Thermometer, label: "Temps", path: "/app/temps" },
+  { icon: Truck, label: "Suppliers", path: "/app/suppliers" },
   { icon: AlertTriangle, label: "Incidents", path: "/app/incidents" },
   { icon: Shield, label: "HACCP", path: "/app/haccp" },
   { icon: GraduationCap, label: "Training", path: "/app/training" },

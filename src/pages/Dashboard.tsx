@@ -12,6 +12,7 @@ import {
   getTempTodaySummary,
   listTempAssets,
   listOpenCorrectiveActions,
+  listRecentlyCompletedCorrectiveActions,
   completeCorrectiveAction,
   type CorrectiveActionRow,
   type TempAssetRow,
@@ -20,10 +21,23 @@ import {
 } from "@/lib/temps";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 import { cn } from "@/lib/utils";
 import {
@@ -37,6 +51,7 @@ import {
   Utensils,
   RefreshCw,
   ListTodo,
+  History,
 } from "lucide-react";
 
 import type React from "react";
@@ -48,7 +63,14 @@ function localSiteKey(companyId: string) {
 function formatDue(dueAt?: string | null) {
   if (!dueAt) return "—";
   const d = new Date(dueAt);
-  return d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? String(dueAt) : d.toLocaleString();
+}
+
+function isOverdue(dueAt?: string | null) {
+  if (!dueAt) return false;
+  const t = new Date(dueAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return t < Date.now();
 }
 
 function startOfDay(d = new Date()) {
@@ -90,7 +112,12 @@ function getWindows(now = new Date()) {
 function priorityBadge(priority?: string | null) {
   const p = (priority ?? "medium").toLowerCase();
   if (p === "critical") return <Badge variant="destructive">critical</Badge>;
-  if (p === "high") return <Badge variant="outline" className="border-red-200 text-red-700">high</Badge>;
+  if (p === "high")
+    return (
+      <Badge variant="outline" className="border-red-200 text-red-700">
+        high
+      </Badge>
+    );
   if (p === "low") return <Badge variant="outline">low</Badge>;
   return <Badge variant="secondary">medium</Badge>;
 }
@@ -111,7 +138,15 @@ export default function Dashboard() {
 
   // Corrective actions
   const [actions, setActions] = useState<CorrectiveActionRow[]>([]);
+  const [recentActions, setRecentActions] = useState<CorrectiveActionRow[]>([]);
   const [actionsLoading, setActionsLoading] = useState(false);
+
+  // Completion notes UI
+  const [completeOpenId, setCompleteOpenId] = useState<string | null>(null);
+  const [completeNotes, setCompleteNotes] = useState<Record<string, string>>(
+    {}
+  );
+  const [completingId, setCompletingId] = useState<string | null>(null);
 
   // Site selection
   const [activeSiteId, setActiveSiteId] = useState<string>("");
@@ -145,6 +180,7 @@ export default function Dashboard() {
         setTempSummary(null);
         setTempAssets([]);
         setActions([]);
+        setRecentActions([]);
         return;
       }
 
@@ -154,15 +190,17 @@ export default function Dashboard() {
       }
 
       // 2) Temps + Actions
-      const [assets, today, openActions] = await Promise.all([
+      const [assets, today, openActions, completedActions] = await Promise.all([
         listTempAssets(companyId, resolvedSite.id),
         getTempTodaySummary(companyId, resolvedSite.id),
-        listOpenCorrectiveActions(companyId, resolvedSite.id, 20),
+        listOpenCorrectiveActions(companyId, resolvedSite.id, 50),
+        listRecentlyCompletedCorrectiveActions(companyId, resolvedSite.id, 8),
       ]);
 
       setTempAssets(assets);
       setTempSummary(today);
       setActions(openActions);
+      setRecentActions(completedActions);
     } catch (e: any) {
       console.error("Dashboard load error:", e);
       setErr(e?.message ?? "Failed to load dashboard");
@@ -170,6 +208,7 @@ export default function Dashboard() {
       setTempSummary(null);
       setTempAssets([]);
       setActions([]);
+      setRecentActions([]);
     } finally {
       setLoading(false);
     }
@@ -197,7 +236,9 @@ export default function Dashboard() {
 
     const records = (tempSummary?.recordsToday ?? []) as TempRecordRow[];
 
-    const assetRecords = records.filter((r) => r.kind === "fridge" || r.kind === "freezer");
+    const assetRecords = records.filter(
+      (r) => r.kind === "fridge" || r.kind === "freezer"
+    );
     const foodRecords = records.filter((r) => r.kind === "food");
 
     const byAssetId = new Map<string, TempRecordRow[]>();
@@ -222,7 +263,9 @@ export default function Dashboard() {
     const amOk = assetCount === 0 ? true : amCovered >= assetCount;
     const pmOk = assetCount === 0 ? true : pmCovered >= assetCount;
 
-    const assetsOk = assetRecords.length >= targetAssetTemps || (assetCount === 0 && assetRecords.length === 0);
+    const assetsOk =
+      assetRecords.length >= targetAssetTemps ||
+      (assetCount === 0 && assetRecords.length === 0);
     const foodOk = foodRecords.length >= targetFoodTemps;
 
     return {
@@ -242,18 +285,43 @@ export default function Dashboard() {
 
   const openActionsCount = actions.length;
 
+  const refreshActions = async () => {
+    if (!activeCompanyId || !activeSite?.id) return;
+    const [open, completed] = await Promise.all([
+      listOpenCorrectiveActions(activeCompanyId, activeSite.id, 50),
+      listRecentlyCompletedCorrectiveActions(activeCompanyId, activeSite.id, 8),
+    ]);
+    setActions(open);
+    setRecentActions(completed);
+  };
+
   const onCompleteAction = async (actionId: string) => {
     if (!activeCompanyId || !activeSite?.id) return;
+
+    const notes = (completeNotes[actionId] ?? "").trim();
+    if (!notes) {
+      setErr("Please add completion notes (what was done) before completing.");
+      setCompleteOpenId(actionId);
+      return;
+    }
+
     try {
       setActionsLoading(true);
-      await completeCorrectiveAction(actionId);
-      const refreshed = await listOpenCorrectiveActions(activeCompanyId, activeSite.id, 20);
-      setActions(refreshed);
+      setCompletingId(actionId);
+      setErr(null);
+
+      await completeCorrectiveAction(actionId, notes);
+
+      await refreshActions();
+
+      setCompleteOpenId(null);
+      setCompleteNotes((prev) => ({ ...prev, [actionId]: "" }));
     } catch (e: any) {
       console.error("completeCorrectiveAction error:", e);
       setErr(e?.message ?? "Failed to complete action");
     } finally {
       setActionsLoading(false);
+      setCompletingId(null);
     }
   };
 
@@ -277,7 +345,8 @@ export default function Dashboard() {
           <CardHeader>
             <CardTitle>Set up your first site</CardTitle>
             <CardDescription>
-              Sites are mandatory. Create a site (e.g. “Kings Road”) then build Opening/Closing checklists for it.
+              Sites are mandatory. Create a site (e.g. “Kings Road”) then build
+              Opening/Closing checklists for it.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -297,9 +366,7 @@ export default function Dashboard() {
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-4 opacity-70">
               <div className="min-w-0">
                 <div className="font-semibold">2) Create checklist templates</div>
-                <div className="text-sm text-muted-foreground">
-                  Opening, Closing, Delivery, Cleaning…
-                </div>
+                <div className="text-sm text-muted-foreground">Opening, Closing, Delivery, Cleaning…</div>
               </div>
               <Button variant="outline" disabled>
                 Next
@@ -309,9 +376,7 @@ export default function Dashboard() {
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-4 opacity-70">
               <div className="min-w-0">
                 <div className="font-semibold">3) Schedule recurring runs</div>
-                <div className="text-sm text-muted-foreground">
-                  “Opening by 2pm”, “Weekly deep clean”, etc.
-                </div>
+                <div className="text-sm text-muted-foreground">“Opening by 2pm”, “Weekly deep clean”, etc.</div>
               </div>
               <Button variant="outline" disabled>
                 Next
@@ -374,7 +439,6 @@ export default function Dashboard() {
             </Select>
           </div>
 
-          {/* your earlier schema error showed status missing in some DBs — so keep this optional */}
           {(activeSite as any)?.status ? (
             <Badge variant={(activeSite as any).status === "active" ? "default" : "secondary"}>
               {(activeSite as any).status}
@@ -387,7 +451,8 @@ export default function Dashboard() {
             variant="outline"
             onClick={() => {
               if (!activeCompanyId) return;
-              const siteGuess = activeSite?.id || activeSiteId || "00000000-0000-0000-0000-000000000000";
+              const siteGuess =
+                activeSite?.id || activeSiteId || "00000000-0000-0000-0000-000000000000";
               load(activeCompanyId, siteGuess);
             }}
             disabled={loading || !activeCompanyId}
@@ -397,11 +462,7 @@ export default function Dashboard() {
             Refresh
           </Button>
 
-          <Button
-            onClick={() => navigate("/app/checks")}
-            disabled={!activeSite?.id}
-            className="gap-2"
-          >
+          <Button onClick={() => navigate("/app/checks")} disabled={!activeSite?.id} className="gap-2">
             Start a checklist <ArrowRight className="w-4 h-4" />
           </Button>
         </div>
@@ -413,7 +474,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* KPI row */}
       <div className="mt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatCard
           title="Overdue"
@@ -453,7 +513,7 @@ export default function Dashboard() {
             Corrective actions
           </CardTitle>
           <CardDescription>
-            Generated when a temperature requires action (e.g. rejected/quarantine deliveries). Complete them to clear the task list.
+            Generated when a temperature requires action. Add completion notes to close the action.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -463,34 +523,155 @@ export default function Dashboard() {
             <div className="text-sm text-muted-foreground">No open actions ✅</div>
           ) : (
             <div className="space-y-2">
-              {actions.slice(0, 12).map((a) => (
-                <div key={a.id} className="rounded-lg border border-border p-3 flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="font-semibold truncate">{a.title ?? "Corrective action"}</div>
-                    <div className="text-xs text-muted-foreground mt-1">
-                      Due: {formatDue(a.due_at)} • Created: {a.created_at ? new Date(a.created_at).toLocaleString() : "—"}
-                    </div>
-                    {a.details ? <div className="text-xs text-muted-foreground mt-2">{a.details}</div> : null}
-                    <div className="mt-2">{priorityBadge(a.priority)}</div>
-                  </div>
+              {actions.slice(0, 12).map((a) => {
+                const overdue = isOverdue(a.due_at);
+                const open = completeOpenId === a.id;
 
-                  <div className="flex flex-col items-end gap-2 shrink-0">
-                    <Button
-                      size="sm"
-                      onClick={() => onCompleteAction(a.id)}
-                      disabled={actionsLoading}
-                    >
-                      Complete
-                    </Button>
+                return (
+                  <div
+                    key={a.id}
+                    className={cn(
+                      "rounded-lg border p-3 flex items-start justify-between gap-3",
+                      overdue ? "border-red-200" : "border-border"
+                    )}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="font-semibold truncate">
+                          {a.title ?? "Corrective action"}
+                        </div>
+                        {overdue ? (
+                          <Badge variant="destructive">overdue</Badge>
+                        ) : (
+                          <Badge variant="secondary">open</Badge>
+                        )}
+                        {priorityBadge(a.priority)}
+                      </div>
+
+                      <div className="text-xs text-muted-foreground mt-1">
+                        <span className={cn(overdue && "text-red-600 font-medium")}>
+                          Due: {formatDue(a.due_at)}
+                        </span>
+                        {" • "}
+                        Created:{" "}
+                        {a.created_at ? new Date(a.created_at).toLocaleString() : "—"}
+                      </div>
+
+                      {a.details ? (
+                        <div className="mt-2 text-sm">
+                          <div className="text-xs text-muted-foreground">What needs doing</div>
+                          <div className="mt-1 whitespace-pre-line">{a.details}</div>
+                        </div>
+                      ) : null}
+
+                      {open ? (
+                        <div className="mt-3 rounded-lg border border-border p-3 bg-muted/20">
+                          <div className="text-xs text-muted-foreground">
+                            Completion notes (what was done) *
+                          </div>
+                          <Input
+                            className="mt-2"
+                            value={completeNotes[a.id] ?? ""}
+                            onChange={(e) =>
+                              setCompleteNotes((prev) => ({
+                                ...prev,
+                                [a.id]: e.target.value,
+                              }))
+                            }
+                            placeholder='e.g. "Moved stock to Fridge 2, called engineer, re-check booked 30 mins."'
+                          />
+
+                          <div className="mt-2 flex items-center justify-end gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setCompleteOpenId(null)}
+                              disabled={actionsLoading}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              size="sm"
+                              onClick={() => onCompleteAction(a.id)}
+                              disabled={actionsLoading}
+                              className="gap-2"
+                            >
+                              {completingId === a.id ? "Completing…" : "Save & Complete"}
+                            </Button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="flex flex-col items-end gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        onClick={() => setCompleteOpenId(a.id)}
+                        disabled={actionsLoading}
+                      >
+                        Complete
+                      </Button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
 
               {actions.length > 12 ? (
                 <div className="text-xs text-muted-foreground pt-2">
                   Showing 12 of {actions.length}.
                 </div>
               ) : null}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Recently completed corrective actions (RESTORED / NEW) */}
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <History className="w-5 h-5" />
+            Recently completed actions
+          </CardTitle>
+          <CardDescription>
+            Shows what was done when an action was completed (latest first).
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="text-sm text-muted-foreground">Loading…</div>
+          ) : recentActions.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No completed actions yet.</div>
+          ) : (
+            <div className="space-y-2">
+              {recentActions.map((a) => (
+                <div key={a.id} className="rounded-lg border border-border p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="font-semibold truncate">{a.title}</div>
+                    <Badge variant="secondary">
+                      Completed {a.action_logged_at ? formatDue(a.action_logged_at) : "—"}
+                    </Badge>
+                  </div>
+
+                  {a.details ? (
+                    <div className="mt-2 text-sm">
+                      <div className="text-xs text-muted-foreground">What needed doing</div>
+                      <div className="mt-1 whitespace-pre-line">{a.details}</div>
+                    </div>
+                  ) : null}
+
+                  <div className="mt-2 text-sm">
+                    <div className="text-xs text-muted-foreground">What was done</div>
+                    <div className="mt-1 whitespace-pre-line">
+                      {(a as any).action_completed_notes || "—"}
+                    </div>
+                  </div>
+
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    Original due: {formatDue(a.due_at)} • Logged: {formatDue(a.action_logged_at)}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </CardContent>
@@ -523,14 +704,14 @@ export default function Dashboard() {
                   Food temps {tempsKpis.foodRecorded} / {tempsKpis.targetFoodTemps}
                 </Badge>
 
-                <Badge variant="outline">
-                  Active cold assets: {tempsKpis.assetCount}
-                </Badge>
+                <Badge variant="outline">Active cold assets: {tempsKpis.assetCount}</Badge>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="rounded-lg border border-border p-3">
-                  <div className="text-xs text-muted-foreground">AM window (00:00 → 14:00)</div>
+                  <div className="text-xs text-muted-foreground">
+                    AM window (00:00 → 14:00)
+                  </div>
                   <div className="mt-1 flex items-center justify-between">
                     <div className="font-semibold">Coverage</div>
                     <Badge variant={tempsKpis.amOk ? "default" : "destructive"}>
@@ -543,7 +724,9 @@ export default function Dashboard() {
                 </div>
 
                 <div className="rounded-lg border border-border p-3">
-                  <div className="text-xs text-muted-foreground">PM window (14:00 → 02:00)</div>
+                  <div className="text-xs text-muted-foreground">
+                    PM window (14:00 → 02:00)
+                  </div>
                   <div className="mt-1 flex items-center justify-between">
                     <div className="font-semibold">Coverage</div>
                     <Badge variant={tempsKpis.pmOk ? "default" : "destructive"}>
@@ -566,7 +749,7 @@ export default function Dashboard() {
         </CardContent>
       </Card>
 
-      {/* Lists */}
+      {/* Checklist panels */}
       <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>
           <CardHeader>
@@ -627,7 +810,9 @@ export default function Dashboard() {
                     className="flex items-center justify-between gap-3 rounded-lg border border-border p-3"
                   >
                     <div className="min-w-0">
-                      <div className="font-semibold truncate">{r.template_name ?? "Checklist"}</div>
+                      <div className="font-semibold truncate">
+                        {r.template_name ?? "Checklist"}
+                      </div>
                       <div className="text-xs text-muted-foreground">
                         Completed{" "}
                         {r.completed_at ? new Date(r.completed_at).toLocaleString() : "—"}

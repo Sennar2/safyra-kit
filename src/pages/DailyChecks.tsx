@@ -505,7 +505,7 @@ export default function DailyChecks() {
 
       <Tabs defaultValue="templates" className="mt-6">
         <TabsList>
-          <TabsTrigger value="templates">Templates</TabsTrigger>
+          <TabsTrigger value="templates">Checklists</TabsTrigger>
           <TabsTrigger value="schedules">Schedules</TabsTrigger>
           <TabsTrigger value="runs">Runs</TabsTrigger>
         </TabsList>
@@ -514,7 +514,7 @@ export default function DailyChecks() {
         <TabsContent value="templates" className="mt-4 space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Create template</CardTitle>
+              <CardTitle>Create a checklist</CardTitle>
               <CardDescription>Opening, Closing, Delivery checks, etc.</CardDescription>
             </CardHeader>
             <CardContent className="flex gap-2">
@@ -534,12 +534,12 @@ export default function DailyChecks() {
             {/* Template list */}
             <Card>
               <CardHeader>
-                <CardTitle>Templates</CardTitle>
+                <CardTitle>Checklists</CardTitle>
                 <CardDescription>Select one to edit items.</CardDescription>
               </CardHeader>
               <CardContent>
                 {templates.length === 0 ? (
-                  <div className="text-sm text-muted-foreground">No templates yet.</div>
+                  <div className="text-sm text-muted-foreground">No checklists yet.</div>
                 ) : (
                   <div className="space-y-2">
                     {templates.map((t) => {
@@ -578,7 +578,7 @@ export default function DailyChecks() {
             <Card>
               <CardHeader className="flex flex-row items-start justify-between gap-3">
                 <div>
-                  <CardTitle>Template items</CardTitle>
+                  <CardTitle>Checklist items</CardTitle>
                   <CardDescription>Add/edit the checklist steps.</CardDescription>
                 </div>
                 {selectedTemplateId && (
@@ -605,7 +605,7 @@ export default function DailyChecks() {
 
               <CardContent>
                 {!selectedTemplateId ? (
-                  <div className="text-sm text-muted-foreground">Select a template to edit it.</div>
+                  <div className="text-sm text-muted-foreground">Select a checklist to edit it.</div>
                 ) : (
                   <>
                     <div className="flex flex-col md:flex-row gap-2">
