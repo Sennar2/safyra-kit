@@ -75,6 +75,10 @@ export type TempRecordRow = {
   delivery_item?: string | null;
   supplier?: string | null;
   delivery_result?: string | null;
+
+  // NEW (optional) linkage fields (DB)
+  supplier_id?: string | null;
+  supplier_product_id?: string | null;
   supplier_delivery_id?: string | null;
 
   // action fields (DB)
@@ -307,7 +311,9 @@ export async function createTempProbe(
       name: input.name,
       serial: input.serial ?? null,
     })
-    .select("id,company_id,name,serial,active,last_calibrated_at,next_calibration_due_at,created_at")
+    .select(
+      "id,company_id,name,serial,active,last_calibrated_at,next_calibration_due_at,created_at"
+    )
     .single();
 
   if (error) throw error;
@@ -317,7 +323,9 @@ export async function createTempProbe(
 export async function listTempFoodItems(companyId: string) {
   const { data, error } = await supabase
     .from("temp_food_items")
-    .select("id,company_id,name,category,active,recommended_every_minutes,required,created_at")
+    .select(
+      "id,company_id,name,category,active,recommended_every_minutes,required,created_at"
+    )
     .eq("company_id", companyId)
     .order("created_at", { ascending: false });
 
@@ -343,7 +351,9 @@ export async function createTempFoodItem(
       recommended_every_minutes: input.recommended_every_minutes ?? 120,
       required: input.required ?? false,
     })
-    .select("id,company_id,name,category,active,recommended_every_minutes,required,created_at")
+    .select(
+      "id,company_id,name,category,active,recommended_every_minutes,required,created_at"
+    )
     .single();
 
   if (error) throw error;
@@ -353,11 +363,13 @@ export async function createTempFoodItem(
 export async function listTempExpectations(companyId: string, siteId: string) {
   const { data, error } = await supabase
     .from("temp_expectations")
-    .select(`
+    .select(
+      `
       id,company_id,site_id,kind,asset_id,food_item_id,every_minutes,active,start_time,end_time,created_at,
       asset:temp_assets(id,name,type),
       food:temp_food_items(id,name)
-    `)
+    `
+    )
     .eq("company_id", companyId)
     .eq("site_id", siteId)
     .order("created_at", { ascending: false });
@@ -385,11 +397,13 @@ export async function createTempExpectation(input: {
       every_minutes: input.everyMinutes,
       active: true,
     })
-    .select(`
+    .select(
+      `
       id,company_id,site_id,kind,asset_id,food_item_id,every_minutes,active,start_time,end_time,created_at,
       asset:temp_assets(id,name,type),
       food:temp_food_items(id,name)
-    `)
+    `
+    )
     .single();
 
   if (error) throw error;
@@ -404,11 +418,13 @@ export async function setTempExpectationActive(
     .from("temp_expectations")
     .update({ active })
     .eq("id", expectationId)
-    .select(`
+    .select(
+      `
       id,company_id,site_id,kind,asset_id,food_item_id,every_minutes,active,start_time,end_time,created_at,
       asset:temp_assets(id,name,type),
       food:temp_food_items(id,name)
-    `)
+    `
+    )
     .single();
 
   if (error) throw error;
@@ -432,6 +448,10 @@ export async function createTempRecord(input: {
   deliveryItem?: string | null;
   supplier?: string | null;
   deliveryResult?: DeliveryResult | string | null;
+
+  // NEW linkage (optional)
+  supplierId?: string | null;
+  supplierProductId?: string | null;
   supplierDeliveryId?: string | null;
 
   // action fields (DB names)
@@ -458,6 +478,11 @@ export async function createTempRecord(input: {
     supplier: input.supplier ?? null,
     delivery_result: input.deliveryResult ?? null,
 
+    // NEW IDs (only work if columns exist)
+    supplier_id: input.supplierId ?? null,
+    supplier_product_id: input.supplierProductId ?? null,
+    supplier_delivery_id: input.supplierDeliveryId ?? null,
+
     // actions
     requires_action: input.requiresAction ?? false,
     action_notes: input.actionNotes ?? null,
@@ -471,21 +496,28 @@ export async function createTempRecord(input: {
   const { data, error } = await supabase
     .from("temp_records")
     .insert(payload)
-    .select(`
+    .select(
+      `
       id,company_id,site_id,kind,asset_id,food_item_id,probe_id,value_c,notes,recorded_at,created_at,
       recorded_by,
       delivery_item,supplier,delivery_result,
+      supplier_id,supplier_product_id,supplier_delivery_id,
       requires_action,action_due_at,action_logged,action_notes,action_completed_notes,action_logged_at,action_logged_by,
       asset:temp_assets(id,name,type),
       food:temp_food_items(id,name),
       probe:temp_probes(id,name)
-    `)
+    `
+    )
     .single();
 
   if (error) throw error;
   return data as TempRecordRow;
 }
 
+/**
+ * Delivery-specific helper.
+ * ✅ only declared once now
+ */
 export async function createDeliveryTempRecord(input: {
   companyId: string;
   siteId: string;
@@ -496,6 +528,11 @@ export async function createDeliveryTempRecord(input: {
   itemName: string;
   supplier?: string | null;
   deliveryResult: DeliveryResult;
+
+  // NEW optional linkage
+  supplierId?: string | null;
+  supplierProductId?: string | null;
+  supplierDeliveryId?: string | null;
 
   requiresAction: boolean;
   actionNotes?: string | null;
@@ -508,47 +545,18 @@ export async function createDeliveryTempRecord(input: {
     valueC: input.valueC,
     probeId: input.probeId ?? null,
     notes: input.notes ?? null,
+
     deliveryItem: input.itemName,
     supplier: input.supplier ?? null,
     deliveryResult: input.deliveryResult,
+
+    supplierId: input.supplierId ?? null,
+    supplierProductId: input.supplierProductId ?? null,
+    supplierDeliveryId: input.supplierDeliveryId ?? null,
+
     requiresAction: input.requiresAction,
     actionNotes: input.actionNotes ?? null,
     actionDueAt: input.actionDueAt ?? null,
-    
-  });
-}
-
-export async function createDeliveryTempRecord(input: {
-  companyId: string;
-  siteId: string;
-  valueC: number;
-  probeId?: string | null;
-  notes?: string | null;
-
-  itemName: string;
-  supplier?: string | null;
-  deliveryResult: DeliveryResult;
-
-  requiresAction: boolean;
-  actionNotes?: string | null;
-  actionDueAt?: string | null;
-
-  supplierDeliveryId?: string | null; // NEW
-}) {
-  return createTempRecord({
-    companyId: input.companyId,
-    siteId: input.siteId,
-    kind: "delivery",
-    valueC: input.valueC,
-    probeId: input.probeId ?? null,
-    notes: input.notes ?? null,
-    deliveryItem: input.itemName,
-    supplier: input.supplier ?? null,
-    deliveryResult: input.deliveryResult,
-    requiresAction: input.requiresAction,
-    actionNotes: input.actionNotes ?? null,
-    actionDueAt: input.actionDueAt ?? null,
-    supplierDeliveryId: input.supplierDeliveryId ?? null, // NEW
   });
 }
 
@@ -559,15 +567,18 @@ export async function listTempRecordsToday(
 ) {
   const { data, error } = await supabase
     .from("temp_records")
-    .select(`
+    .select(
+      `
       id,company_id,site_id,kind,asset_id,food_item_id,probe_id,value_c,notes,recorded_at,created_at,
       recorded_by,
       delivery_item,supplier,delivery_result,
+      supplier_id,supplier_product_id,supplier_delivery_id,
       requires_action,action_due_at,action_logged,action_notes,action_completed_notes,action_logged_at,action_logged_by,
       asset:temp_assets(id,name,type),
       food:temp_food_items(id,name),
       probe:temp_probes(id,name)
-    `)
+    `
+    )
     .eq("company_id", companyId)
     .eq("site_id", siteId)
     .gte("recorded_at", startOfTodayISO())
@@ -588,14 +599,17 @@ export async function listOpenCorrectiveActions(
 ) {
   const { data, error } = await supabase
     .from("temp_records")
-    .select(`
+    .select(
+      `
       id,company_id,site_id,kind,asset_id,food_item_id,value_c,notes,recorded_at,created_at,
       recorded_by,
       delivery_item,supplier,delivery_result,
+      supplier_id,supplier_product_id,supplier_delivery_id,
       requires_action,action_due_at,action_logged,action_notes,action_completed_notes,action_logged_at,action_logged_by,
       asset:temp_assets(id,name,type),
       food:temp_food_items(id,name)
-    `)
+    `
+    )
     .eq("company_id", companyId)
     .eq("site_id", siteId)
     .eq("requires_action", true)
@@ -654,14 +668,17 @@ export async function listRecentlyCompletedCorrectiveActions(
 ) {
   const { data, error } = await supabase
     .from("temp_records")
-    .select(`
+    .select(
+      `
       id,company_id,site_id,kind,asset_id,food_item_id,value_c,notes,recorded_at,created_at,
       recorded_by,
       delivery_item,supplier,delivery_result,
+      supplier_id,supplier_product_id,supplier_delivery_id,
       requires_action,action_due_at,action_logged,action_notes,action_completed_notes,action_logged_at,action_logged_by,
       asset:temp_assets(id,name,type),
       food:temp_food_items(id,name)
-    `)
+    `
+    )
     .eq("company_id", companyId)
     .eq("site_id", siteId)
     .eq("requires_action", true)
@@ -727,11 +744,13 @@ export async function completeCorrectiveAction(
       action_completed_notes: completedNotes ?? null,
     })
     .eq("id", tempRecordId)
-    .select(`
+    .select(
+      `
       id,company_id,site_id,
       requires_action,action_logged,action_logged_at,action_logged_by,
       action_notes,action_completed_notes,action_due_at
-    `)
+    `
+    )
     .single();
 
   if (error) throw error;

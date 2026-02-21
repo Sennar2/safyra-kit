@@ -31,6 +31,9 @@ import {
   type CorrectiveActionPriority,
 } from "@/lib/temps";
 
+import { listSuppliers, type SupplierRow } from "@/lib/suppliers";
+import { listSupplierProducts, type SupplierProductRow } from "@/lib/supplierProducts";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -77,6 +80,8 @@ function minutesLabel(n?: number | null) {
 
 // Radix SelectItem cannot have value=""
 const NO_PROBE = "none";
+const NO_SUPPLIER = "none_supplier";
+const NO_DELIVERY_PRODUCT = "none_delivery_product";
 
 function severityBadge(sev: "ok" | "warn" | "critical") {
   if (sev === "ok") return <Badge variant="secondary">OK</Badge>;
@@ -118,10 +123,17 @@ export default function Temps() {
   const [recordValue, setRecordValue] = useState<string>("");
   const [recordNotes, setRecordNotes] = useState<string>("");
 
-  // delivery fields (NO batch)
+  // delivery fields
   const [deliveryItemName, setDeliveryItemName] = useState("");
-  const [deliverySupplier, setDeliverySupplier] = useState("");
+  const [deliverySupplierId, setDeliverySupplierId] = useState<string>(NO_SUPPLIER);
+  const [deliverySupplierText, setDeliverySupplierText] = useState(""); // manual entry when "No supplier"
+  const [deliveryProductId, setDeliveryProductId] = useState<string>(NO_DELIVERY_PRODUCT);
   const [deliveryResult, setDeliveryResult] = useState<DeliveryResult>("ok");
+
+  // delivery dropdown data
+  const [suppliers, setSuppliers] = useState<SupplierRow[]>([]);
+  const [supplierProducts, setSupplierProducts] = useState<SupplierProductRow[]>([]);
+  const [supplierProductsLoading, setSupplierProductsLoading] = useState(false);
 
   // corrective action fields
   const [correctiveAction, setCorrectiveAction] = useState("");
@@ -155,10 +167,52 @@ export default function Temps() {
     if (saved) setSiteId(saved);
   }, [activeCompanyId]);
 
+  // Load suppliers (for delivery dropdown)
+  useEffect(() => {
+    if (!activeCompanyId) return;
+    (async () => {
+      try {
+        const s = await listSuppliers(activeCompanyId);
+        setSuppliers(s ?? []);
+      } catch (e) {
+        console.error("Failed to load suppliers", e);
+        setSuppliers([]);
+      }
+    })();
+  }, [activeCompanyId]);
+
+  // Load products for selected supplier (for delivery product dropdown)
+  useEffect(() => {
+    if (!activeCompanyId) return;
+
+    const sid = deliverySupplierId === NO_SUPPLIER ? null : deliverySupplierId;
+    if (!sid) {
+      setSupplierProducts([]);
+      setDeliveryProductId(NO_DELIVERY_PRODUCT);
+      return;
+    }
+
+    (async () => {
+      setSupplierProductsLoading(true);
+      try {
+        const prods = await listSupplierProducts(activeCompanyId, sid);
+        setSupplierProducts(prods ?? []);
+      } catch (e) {
+        console.error("Failed to load supplier products", e);
+        setSupplierProducts([]);
+      } finally {
+        setSupplierProductsLoading(false);
+      }
+    })();
+  }, [deliverySupplierId, activeCompanyId]);
+
   const clearDeliveryFields = () => {
     setDeliveryItemName("");
-    setDeliverySupplier("");
+    setDeliverySupplierId(NO_SUPPLIER);
+    setDeliverySupplierText("");
+    setDeliveryProductId(NO_DELIVERY_PRODUCT);
     setDeliveryResult("ok");
+    setSupplierProducts([]);
   };
 
   const clearCorrectiveFields = () => {
@@ -300,17 +354,22 @@ export default function Temps() {
       }
 
       if (recordKind === "delivery") {
+        const supplierName =
+          deliverySupplierId !== NO_SUPPLIER
+            ? (suppliers.find((s) => s.id === deliverySupplierId)?.name ?? null)
+            : (deliverySupplierText.trim() || null);
+
         await createDeliveryTempRecord({
           companyId: activeCompanyId,
           siteId: activeSite.id,
           valueC,
           probeId: recordProbeId === NO_PROBE ? null : recordProbeId,
           itemName: deliveryItemName.trim(),
-          supplier: deliverySupplier.trim() || null,
+          supplier: supplierName,
           deliveryResult,
           notes: recordNotes || null,
 
-          // NEW: task fields
+          // task fields
           requiresAction: actionTriggered,
           actionNotes: actionTriggered ? correctiveAction.trim() : null,
           actionDueAt: actionTriggered ? dueIso : null,
@@ -334,7 +393,7 @@ export default function Temps() {
         probeId: recordProbeId === NO_PROBE ? null : recordProbeId,
         notes: recordNotes || null,
 
-        // NEW: task fields
+        // task fields
         requiresAction: actionTriggered,
         actionNotes: actionTriggered ? correctiveAction.trim() : null,
         actionDueAt: actionTriggered ? dueIso : null,
@@ -546,6 +605,7 @@ export default function Temps() {
                     <Label className="flex items-center gap-2">
                       <Truck className="w-4 h-4" /> Item probed
                     </Label>
+
                     <Input
                       value={deliveryItemName}
                       onChange={(e) => setDeliveryItemName(e.target.value)}
@@ -555,8 +615,93 @@ export default function Temps() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
                       <div className="space-y-2">
                         <Label>Supplier (optional)</Label>
-                        <Input value={deliverySupplier} onChange={(e) => setDeliverySupplier(e.target.value)} placeholder="e.g. Bidfood" />
+                        <Select
+                          value={deliverySupplierId}
+                          onValueChange={(v) => {
+                            setDeliverySupplierId(v);
+                            setDeliveryProductId(NO_DELIVERY_PRODUCT);
+                            setSupplierProducts([]);
+                            setSupplierProductsLoading(false);
+
+                            if (v === NO_SUPPLIER) {
+                              setDeliverySupplierText("");
+                              return;
+                            }
+
+                            const name = suppliers.find((s) => s.id === v)?.name ?? "";
+                            setDeliverySupplierText(name);
+                          }}
+                        >
+                          <SelectTrigger className="h-10">
+                            <SelectValue placeholder="Select supplier (optional)" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={NO_SUPPLIER}>No supplier</SelectItem>
+                            {suppliers.map((s) => (
+                              <SelectItem key={s.id} value={s.id}>
+                                {s.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+
+                        {deliverySupplierId === NO_SUPPLIER ? (
+                          <div className="mt-2">
+                            <Input
+                              value={deliverySupplierText}
+                              onChange={(e) => setDeliverySupplierText(e.target.value)}
+                              placeholder="Type supplier name (optional)"
+                            />
+                          </div>
+                        ) : null}
                       </div>
+
+                      <div className="space-y-2">
+                        <Label>Product (optional)</Label>
+                        <Select
+                          value={deliveryProductId}
+                          onValueChange={(v) => {
+                            setDeliveryProductId(v);
+
+                            if (v !== NO_DELIVERY_PRODUCT) {
+                              const p = supplierProducts.find((x) => x.id === v);
+                              // auto-fill only if empty (you can still edit for replacements)
+                              if (p && !deliveryItemName.trim()) setDeliveryItemName(p.name);
+                            }
+                          }}
+                          disabled={deliverySupplierId === NO_SUPPLIER}
+                        >
+                          <SelectTrigger className="h-10">
+                            <SelectValue
+                              placeholder={
+                                deliverySupplierId === NO_SUPPLIER
+                                  ? "Select supplier first"
+                                  : supplierProductsLoading
+                                  ? "Loading…"
+                                  : "Select product (optional)"
+                              }
+                            />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={NO_DELIVERY_PRODUCT}>No product</SelectItem>
+                            {supplierProducts
+                              .filter((p) => p.active)
+                              .map((p) => (
+                                <SelectItem key={p.id} value={p.id}>
+                                  {p.name}
+                                  {p.approved ? "" : " (not approved)"}
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
+
+                        <div className="text-xs text-muted-foreground">
+                          You can still edit “Item probed” above for last-minute replacements.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
                       <div className="space-y-2">
                         <Label>Result</Label>
                         <Select value={deliveryResult} onValueChange={(v) => setDeliveryResult(v as DeliveryResult)}>
@@ -569,11 +714,10 @@ export default function Temps() {
                             <SelectItem value="quarantine">Quarantine</SelectItem>
                           </SelectContent>
                         </Select>
+                        <div className="text-xs text-muted-foreground mt-2">
+                          Reject/quarantine will always require a corrective action task.
+                        </div>
                       </div>
-                    </div>
-
-                    <div className="text-xs text-muted-foreground mt-2">
-                      Reject/quarantine will always require a corrective action task.
                     </div>
                   </div>
                 )}
@@ -805,7 +949,7 @@ export default function Temps() {
             </div>
           </TabsContent>
 
-          {/* SETUP TAB (unchanged except kept) */}
+          {/* SETUP TAB (unchanged) */}
           <TabsContent value="setup" className="mt-4 space-y-4">
             <Card>
               <CardHeader>
