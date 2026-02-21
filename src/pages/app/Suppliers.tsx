@@ -207,37 +207,61 @@ export default function Suppliers() {
     setTempOpen(true);
   };
 
-  const submitDeliveryTemp = async () => {
-    if (!tempDeliveryId) return;
+const submitDeliveryTemp = async () => {
+  if (!tempDeliveryId || !activeCompanyId) return;
 
-    const parsed = Number(tempC);
-    if (!Number.isFinite(parsed)) {
-      setErr("Please enter a valid temperature (number).");
-      return;
-    }
+  const parsed = Number(tempC);
+  if (!Number.isFinite(parsed)) {
+    setErr("Please enter a valid temperature (number).");
+    return;
+  }
 
-    const selectedProbeId = probeId === SENTINEL_NONE ? null : probeId;
+  // find the delivery row
+  const delivery = deliveries.find((d) => d.id === tempDeliveryId);
+  if (!delivery) {
+    setErr("Delivery not found.");
+    return;
+  }
 
-    setErr(null);
-    setSavingTemp(true);
-    try {
-      await createDeliveryTempRecord({
-        supplierDeliveryId: tempDeliveryId,
-        probeId: selectedProbeId,
-        tempC: parsed,
-        result: tempResult,
-        notes: tempNotes.trim() || null,
-      });
+  if (!delivery.site_id) {
+    setErr("This delivery has no site assigned. Please assign a site before logging temperature.");
+    return;
+  }
 
-      setTempOpen(false);
-      await loadDeliveries();
-    } catch (e: any) {
-      console.error(e);
-      setErr(e?.message ?? "Failed to log delivery temperature");
-    } finally {
-      setSavingTemp(false);
-    }
-  };
+  const selectedProbeId = probeId === SENTINEL_NONE ? null : probeId;
+
+  setErr(null);
+  setSavingTemp(true);
+
+  try {
+    await createDeliveryTempRecord({
+      companyId: activeCompanyId,
+      siteId: delivery.site_id,
+      valueC: parsed,
+      probeId: selectedProbeId,
+      notes: tempNotes.trim() || null,
+
+      itemName: "Delivery temperature check",
+      supplier: delivery.supplier?.name ?? null,
+      deliveryResult: tempResult,
+
+      supplierDeliveryId: delivery.id,
+      supplierId: delivery.supplier_id ?? null,
+
+      requiresAction: tempResult !== "ok",
+      actionNotes: tempResult !== "ok" ? "Delivery temperature out of range" : null,
+      actionDueAt: null,
+    });
+
+    setTempOpen(false);
+    await loadDeliveries();
+  } catch (e: any) {
+    console.error(e);
+    setErr(e?.message ?? "Failed to log delivery temperature");
+  } finally {
+    setSavingTemp(false);
+  }
+};
 
   const loadSuppliers = async (companyId: string) => {
     setErr(null);

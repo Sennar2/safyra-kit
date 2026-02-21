@@ -18,6 +18,10 @@ import Suppliers from "@/pages/app/Suppliers";
 import AppLayout from "@/components/AppLayout";
 import AdminLayout from "@/components/AdminLayout";
 
+import EhoVisits from "@/pages/app/EhoVisits";
+import EhoVisitNew from "@/pages/app/EhoVisitNew";
+import EhoVisitDetail from "@/pages/app/EhoVisitDetail";
+
 import Dashboard from "@/pages/Dashboard";
 import DailyChecks from "@/pages/DailyChecks";
 import CheckRun from "@/pages/app/CheckRun";
@@ -40,6 +44,7 @@ import Login from "@/pages/Login";
 import NoAccess from "@/pages/NoAccess";
 import Hub from "@/pages/Hub";
 import NotFound from "@/pages/NotFound";
+
 
 const queryClient = new QueryClient();
 
@@ -107,6 +112,9 @@ export default function App() {
                       {/* Other modules */}
                       <Route path="/app/suppliers" element={<Suppliers />} />
                       <Route path="/app/incidents" element={<Incidents />} />
+                      <Route path="/app/eho" element={<EhoVisits />} />
+                      <Route path="/app/eho/new" element={<EhoVisitNew />} />
+                      <Route path="/app/eho/:visitId" element={<EhoVisitDetail />} />
                       <Route path="/app/haccp" element={<HACCP />} />
                       <Route path="/app/training" element={<Training />} />
                     </Route>

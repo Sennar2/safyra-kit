@@ -14,6 +14,7 @@ import {
   Users as UsersIcon,
   Thermometer,
   Truck,
+  Cross,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -35,6 +36,7 @@ const navItems: NavItem[] = [
   { icon: Thermometer, label: "Temps", path: "/app/temps" },
   { icon: Truck, label: "Suppliers", path: "/app/suppliers" },
   { icon: AlertTriangle, label: "Incidents", path: "/app/incidents" },
+  { icon: Cross, label: "EHO Visits", path: "/app/eho" },
   { icon: Shield, label: "HACCP", path: "/app/haccp" },
   { icon: GraduationCap, label: "Training", path: "/app/training" },
   { icon: Building2, label: "Locations", path: "/app/sites", adminOnly: true },
