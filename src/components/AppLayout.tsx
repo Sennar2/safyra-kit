@@ -22,6 +22,8 @@ import { useAuth } from "@/lib/auth";
 import AdminOverlayBar from "@/components/AdminOverlayBar";
 import { useTenant } from "@/lib/tenantContext";
 import { supabase } from "@/integrations/supabase/client";
+import { Badge } from "@/components/ui/badge";
+import { listOpenCorrectiveActions } from "@/lib/temps";
 
 type NavItem = {
   icon: any;
@@ -43,14 +45,71 @@ const navItems: NavItem[] = [
   { icon: UsersIcon, label: "Users", path: "/app/users", adminOnly: true },
 ];
 
+function isOverdueDateOnly(dueDate?: string | null) {
+  if (!dueDate) return false;
+  const t = new Date(dueDate).getTime();
+  if (Number.isNaN(t)) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return t < today.getTime();
+}
+
+function isOverdueDatetime(dueAt?: string | null) {
+  if (!dueAt) return false;
+  const t = new Date(dueAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return t < Date.now();
+}
+
+type SidebarBadges = {
+  tempOpen: number;
+  tempOverdue: number;
+  ehoOpen: number;
+  ehoOverdue: number;
+};
+
+async function listOpenEhoActions(companyId: string, siteId: string, limit = 200) {
+  const { data, error } = await supabase
+    .from("eho_visit_actions")
+    .select(
+      `
+      id,
+      due_date,
+      status,
+      eho_visits!inner (
+        company_id,
+        site_id
+      )
+    `
+    )
+    .eq("status", "open")
+    .eq("eho_visits.company_id", companyId)
+    .eq("eho_visits.site_id", siteId)
+    .limit(limit);
+
+  if (error) throw error;
+  return (data ?? []) as any[];
+}
+
 export default function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
   const { signOut, user } = useAuth();
-  const { tenant } = useTenant();
+
+  // IMPORTANT: we pull activeCompanyId + activeSiteId for scoped badges
+  const { tenant, activeCompanyId, activeSiteId } = useTenant() as any;
 
   const [displayName, setDisplayName] = useState<string>("");
+
+  const [badges, setBadges] = useState<SidebarBadges>({
+    tempOpen: 0,
+    tempOverdue: 0,
+    ehoOpen: 0,
+    ehoOverdue: 0,
+  });
+
+  const [badgesLoading, setBadgesLoading] = useState(false);
 
   useEffect(() => {
     const run = async () => {
@@ -63,7 +122,6 @@ export default function AppLayout() {
         .from("profiles")
         .select("full_name")
         .eq("id", user.id)
-        // ✅ prevents 406 when no row exists
         .maybeSingle();
 
       if (error) {
@@ -77,7 +135,10 @@ export default function AppLayout() {
     run();
   }, [user?.id]);
 
-  const userLabel = useMemo(() => displayName?.trim() || user?.email || "Workspace", [displayName, user?.email]);
+  const userLabel = useMemo(
+    () => displayName?.trim() || user?.email || "Workspace",
+    [displayName, user?.email]
+  );
 
   // keep as you had it (route guards still protect)
   const visibleNav = navItems.filter((x) => !x.adminOnly);
@@ -87,6 +148,77 @@ export default function AppLayout() {
     navigate("/login");
   };
 
+  const loadBadges = async () => {
+    if (!activeCompanyId || !activeSiteId) {
+      setBadges({ tempOpen: 0, tempOverdue: 0, ehoOpen: 0, ehoOverdue: 0 });
+      return;
+    }
+
+    try {
+      setBadgesLoading(true);
+
+      const [tempOpen, ehoOpen] = await Promise.all([
+        listOpenCorrectiveActions(activeCompanyId, activeSiteId, 200),
+        listOpenEhoActions(activeCompanyId, activeSiteId, 200),
+      ]);
+
+      const tempOverdue = (tempOpen ?? []).filter((a: any) =>
+        isOverdueDatetime(a?.due_at)
+      ).length;
+
+      const ehoOverdue = (ehoOpen ?? []).filter((a: any) =>
+        isOverdueDateOnly(a?.due_date)
+      ).length;
+
+      setBadges({
+        tempOpen: tempOpen?.length ?? 0,
+        tempOverdue,
+        ehoOpen: ehoOpen?.length ?? 0,
+        ehoOverdue,
+      });
+    } catch (e) {
+      // silent fail (badges are non-critical)
+      setBadges((prev) => prev);
+    } finally {
+      setBadgesLoading(false);
+    }
+  };
+
+  // Refresh badges on:
+  // - company/site change
+  // - route change
+  // - interval (30s)
+  useEffect(() => {
+    loadBadges();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCompanyId, activeSiteId, location.pathname]);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      loadBadges();
+    }, 30000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCompanyId, activeSiteId]);
+
+  function renderBadgeForPath(path: string) {
+    if (badgesLoading) return null;
+
+    if (path === "/app/temps") {
+      if (badges.tempOverdue > 0) return <Badge variant="destructive">{badges.tempOverdue}</Badge>;
+      if (badges.tempOpen > 0) return <Badge variant="secondary">{badges.tempOpen}</Badge>;
+      return null;
+    }
+
+    if (path === "/app/eho") {
+      if (badges.ehoOverdue > 0) return <Badge variant="destructive">{badges.ehoOverdue}</Badge>;
+      if (badges.ehoOpen > 0) return <Badge variant="secondary">{badges.ehoOpen}</Badge>;
+      return null;
+    }
+
+    return null;
+  }
+
   return (
     <div className="flex h-dvh bg-background">
       <div className="flex-1 flex flex-col min-w-0">
@@ -94,7 +226,10 @@ export default function AppLayout() {
 
         {/* Mobile header */}
         <header className="md:hidden flex items-center justify-between px-4 py-3 border-b border-border bg-card">
-          <button onClick={() => setSidebarOpen(true)} className="p-2 -ml-2 rounded-lg hover:bg-muted text-muted-foreground">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="p-2 -ml-2 rounded-lg hover:bg-muted text-muted-foreground"
+          >
             <Menu className="w-6 h-6" />
           </button>
 
@@ -102,7 +237,9 @@ export default function AppLayout() {
             <div className="w-7 h-7 rounded-md bg-primary flex items-center justify-center">
               <Shield className="w-4 h-4 text-primary-foreground" />
             </div>
-            <span className="font-semibold text-foreground truncate">{tenant?.companyName ?? "Safyra"}</span>
+            <span className="font-semibold text-foreground truncate">
+              {tenant?.companyName ?? "Safyra"}
+            </span>
           </div>
 
           <div className="w-10" />
@@ -116,15 +253,21 @@ export default function AppLayout() {
                 <Shield className="w-5 h-5 text-primary-foreground" />
               </div>
               <div className="min-w-0">
-                <h1 className="text-lg font-bold text-foreground tracking-tight truncate">Safyra</h1>
-                <p className="text-xs text-muted-foreground truncate">{tenant?.companyName ?? "Compliance"}</p>
+                <h1 className="text-lg font-bold text-foreground tracking-tight truncate">
+                  Safyra
+                </h1>
+                <p className="text-xs text-muted-foreground truncate">
+                  {tenant?.companyName ?? "Compliance"}
+                </p>
               </div>
             </div>
 
             <div className="px-3 py-2">
               <div className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2">
                 <Building2 className="w-4 h-4 text-accent-foreground" />
-                <span className="text-sm font-medium text-accent-foreground truncate">{userLabel}</span>
+                <span className="text-sm font-medium text-accent-foreground truncate">
+                  {userLabel}
+                </span>
               </div>
             </div>
 
@@ -136,12 +279,17 @@ export default function AppLayout() {
                     key={item.path}
                     onClick={() => navigate(item.path)}
                     className={cn(
-                      "flex items-center gap-3 w-full rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                      active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                      "flex items-center justify-between gap-3 w-full rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                      active
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted"
                     )}
                   >
-                    <item.icon className="w-5 h-5" />
-                    {item.label}
+                    <span className="flex items-center gap-3 min-w-0">
+                      <item.icon className="w-5 h-5" />
+                      <span className="truncate">{item.label}</span>
+                    </span>
+                    {renderBadgeForPath(item.path)}
                   </button>
                 );
               })}
@@ -187,9 +335,14 @@ export default function AppLayout() {
                     <div className="w-9 h-9 rounded-lg bg-primary flex items-center justify-center">
                       <Shield className="w-5 h-5 text-primary-foreground" />
                     </div>
-                    <h1 className="text-lg font-bold text-foreground truncate">{tenant?.companyName ?? "Safyra"}</h1>
+                    <h1 className="text-lg font-bold text-foreground truncate">
+                      {tenant?.companyName ?? "Safyra"}
+                    </h1>
                   </div>
-                  <button onClick={() => setSidebarOpen(false)} className="p-2 rounded-lg hover:bg-muted text-muted-foreground">
+                  <button
+                    onClick={() => setSidebarOpen(false)}
+                    className="p-2 rounded-lg hover:bg-muted text-muted-foreground"
+                  >
                     <X className="w-5 h-5" />
                   </button>
                 </div>
@@ -197,7 +350,9 @@ export default function AppLayout() {
                 <div className="px-3 py-2">
                   <div className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2">
                     <Building2 className="w-4 h-4 text-accent-foreground" />
-                    <span className="text-sm font-medium text-accent-foreground truncate">{userLabel}</span>
+                    <span className="text-sm font-medium text-accent-foreground truncate">
+                      {userLabel}
+                    </span>
                   </div>
                 </div>
 
@@ -212,12 +367,17 @@ export default function AppLayout() {
                           setSidebarOpen(false);
                         }}
                         className={cn(
-                          "flex items-center gap-3 w-full rounded-lg px-3 py-3 text-sm font-medium transition-colors",
-                          active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                          "flex items-center justify-between gap-3 w-full rounded-lg px-3 py-3 text-sm font-medium transition-colors",
+                          active
+                            ? "bg-primary text-primary-foreground"
+                            : "text-muted-foreground hover:text-foreground hover:bg-muted"
                         )}
                       >
-                        <item.icon className="w-5 h-5" />
-                        {item.label}
+                        <span className="flex items-center gap-3 min-w-0">
+                          <item.icon className="w-5 h-5" />
+                          <span className="truncate">{item.label}</span>
+                        </span>
+                        {renderBadgeForPath(item.path)}
                       </button>
                     );
                   })}
@@ -245,17 +405,26 @@ export default function AppLayout() {
         <nav className="md:hidden flex items-center justify-around border-t border-border bg-card px-2 py-1 safe-area-bottom">
           {visibleNav.map((item) => {
             const active = location.pathname === item.path;
+            const badge = renderBadgeForPath(item.path);
+
             return (
               <button
                 key={item.path}
                 onClick={() => navigate(item.path)}
                 className={cn(
-                  "flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg min-w-[56px] transition-colors",
+                  "relative flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg min-w-[56px] transition-colors",
                   active ? "text-primary" : "text-muted-foreground"
                 )}
               >
                 <item.icon className={cn("w-5 h-5", active && "stroke-[2.5]")} />
                 <span className="text-[10px] font-medium">{item.label}</span>
+
+                {/* Tiny badge on bottom nav */}
+                {badge ? (
+                  <span className="absolute top-1 right-2">
+                    {badge}
+                  </span>
+                ) : null}
               </button>
             );
           })}

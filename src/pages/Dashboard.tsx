@@ -20,6 +20,8 @@ import {
   type TempTodaySummary,
 } from "@/lib/temps";
 
+import { supabase } from "@/integrations/supabase/client";
+
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -52,6 +54,7 @@ import {
   RefreshCw,
   ListTodo,
   History,
+  Cross,
 } from "lucide-react";
 
 import type React from "react";
@@ -71,6 +74,16 @@ function isOverdue(dueAt?: string | null) {
   const t = new Date(dueAt).getTime();
   if (Number.isNaN(t)) return false;
   return t < Date.now();
+}
+
+// EHO due_date is date-only; overdue if before today (00:00)
+function isOverdueDateOnly(dueDate?: string | null) {
+  if (!dueDate) return false;
+  const t = new Date(dueDate).getTime();
+  if (Number.isNaN(t)) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return t < today.getTime();
 }
 
 function startOfDay(d = new Date()) {
@@ -122,6 +135,59 @@ function priorityBadge(priority?: string | null) {
   return <Badge variant="secondary">medium</Badge>;
 }
 
+function formatRole(role?: string | null) {
+  if (!role) return "Unassigned";
+  return role
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+type EhoActionRow = {
+  id: string;
+  visit_id: string;
+  action_text: string;
+  due_date: string | null;
+  status: string | null;
+  assigned_role: string | null;
+};
+
+async function listOpenEhoActions(companyId: string, siteId: string, limit = 50) {
+  const { data, error } = await supabase
+    .from("eho_visit_actions")
+    .select(
+      `
+      id,
+      visit_id,
+      action_text,
+      due_date,
+      status,
+      assigned_role,
+      eho_visits!inner (
+        id,
+        company_id,
+        site_id
+      )
+    `
+    )
+    .eq("status", "open")
+    .eq("eho_visits.company_id", companyId)
+    .eq("eho_visits.site_id", siteId)
+    .order("due_date", { ascending: true, nullsFirst: true })
+    .limit(limit);
+
+  if (error) throw error;
+
+  return (data ?? []).map((x: any) => ({
+    id: x.id,
+    visit_id: x.visit_id,
+    action_text: x.action_text,
+    due_date: x.due_date,
+    status: x.status,
+    assigned_role: x.assigned_role,
+  })) as EhoActionRow[];
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const { activeCompanyId } = useTenant();
@@ -136,10 +202,13 @@ export default function Dashboard() {
   const [tempSummary, setTempSummary] = useState<TempTodaySummary | null>(null);
   const [tempAssets, setTempAssets] = useState<TempAssetRow[]>([]);
 
-  // Corrective actions
+  // Temp corrective actions
   const [actions, setActions] = useState<CorrectiveActionRow[]>([]);
   const [recentActions, setRecentActions] = useState<CorrectiveActionRow[]>([]);
   const [actionsLoading, setActionsLoading] = useState(false);
+
+  // EHO actions
+  const [ehoActions, setEhoActions] = useState<EhoActionRow[]>([]);
 
   // Completion notes UI
   const [completeOpenId, setCompleteOpenId] = useState<string | null>(null);
@@ -181,6 +250,7 @@ export default function Dashboard() {
         setTempAssets([]);
         setActions([]);
         setRecentActions([]);
+        setEhoActions([]);
         return;
       }
 
@@ -189,18 +259,21 @@ export default function Dashboard() {
         localStorage.setItem(localSiteKey(companyId), resolvedSite.id);
       }
 
-      // 2) Temps + Actions
-      const [assets, today, openActions, completedActions] = await Promise.all([
-        listTempAssets(companyId, resolvedSite.id),
-        getTempTodaySummary(companyId, resolvedSite.id),
-        listOpenCorrectiveActions(companyId, resolvedSite.id, 50),
-        listRecentlyCompletedCorrectiveActions(companyId, resolvedSite.id, 8),
-      ]);
+      // 2) Temps + Actions + EHO Actions
+      const [assets, today, openActions, completedActions, openEho] =
+        await Promise.all([
+          listTempAssets(companyId, resolvedSite.id),
+          getTempTodaySummary(companyId, resolvedSite.id),
+          listOpenCorrectiveActions(companyId, resolvedSite.id, 50),
+          listRecentlyCompletedCorrectiveActions(companyId, resolvedSite.id, 8),
+          listOpenEhoActions(companyId, resolvedSite.id, 50),
+        ]);
 
       setTempAssets(assets);
       setTempSummary(today);
       setActions(openActions);
       setRecentActions(completedActions);
+      setEhoActions(openEho);
     } catch (e: any) {
       console.error("Dashboard load error:", e);
       setErr(e?.message ?? "Failed to load dashboard");
@@ -209,6 +282,7 @@ export default function Dashboard() {
       setTempAssets([]);
       setActions([]);
       setRecentActions([]);
+      setEhoActions([]);
     } finally {
       setLoading(false);
     }
@@ -283,16 +357,24 @@ export default function Dashboard() {
     };
   }, [tempAssets, tempSummary]);
 
-  const openActionsCount = actions.length;
+  const tempOpenCount = actions.length;
+  const ehoOpenCount = ehoActions.length;
+  const ehoOverdueCount = ehoActions.filter((a) =>
+    isOverdueDateOnly(a.due_date)
+  ).length;
+
+  const openActionsCount = tempOpenCount + ehoOpenCount;
 
   const refreshActions = async () => {
     if (!activeCompanyId || !activeSite?.id) return;
-    const [open, completed] = await Promise.all([
+    const [open, completed, openEho] = await Promise.all([
       listOpenCorrectiveActions(activeCompanyId, activeSite.id, 50),
       listRecentlyCompletedCorrectiveActions(activeCompanyId, activeSite.id, 8),
+      listOpenEhoActions(activeCompanyId, activeSite.id, 50),
     ]);
     setActions(open);
     setRecentActions(completed);
+    setEhoActions(openEho);
   };
 
   const onCompleteAction = async (actionId: string) => {
@@ -331,7 +413,9 @@ export default function Dashboard() {
       <div className="p-6 max-w-5xl">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-extrabold tracking-tight">Dashboard</h1>
+            <h1 className="text-3xl font-extrabold tracking-tight">
+              Dashboard
+            </h1>
             <p className="text-sm text-muted-foreground mt-1">
               You need at least one site before you can run checklists and temps.
             </p>
@@ -354,7 +438,8 @@ export default function Dashboard() {
               <div className="min-w-0">
                 <div className="font-semibold">1) Create a site</div>
                 <div className="text-sm text-muted-foreground">
-                  Add your first location (address optional). You can add more later.
+                  Add your first location (address optional). You can add more
+                  later.
                 </div>
               </div>
               <Button onClick={() => navigate("/app/sites")} className="gap-2">
@@ -365,8 +450,12 @@ export default function Dashboard() {
 
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-4 opacity-70">
               <div className="min-w-0">
-                <div className="font-semibold">2) Create checklist templates</div>
-                <div className="text-sm text-muted-foreground">Opening, Closing, Delivery, Cleaning…</div>
+                <div className="font-semibold">
+                  2) Create checklist templates
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  Opening, Closing, Delivery, Cleaning…
+                </div>
               </div>
               <Button variant="outline" disabled>
                 Next
@@ -375,8 +464,12 @@ export default function Dashboard() {
 
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-4 opacity-70">
               <div className="min-w-0">
-                <div className="font-semibold">3) Schedule recurring runs</div>
-                <div className="text-sm text-muted-foreground">“Opening by 2pm”, “Weekly deep clean”, etc.</div>
+                <div className="font-semibold">
+                  3) Schedule recurring runs
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  “Opening by 2pm”, “Weekly deep clean”, etc.
+                </div>
               </div>
               <Button variant="outline" disabled>
                 Next
@@ -406,7 +499,11 @@ export default function Dashboard() {
             <ClipboardCheck className="w-4 h-4" />
             Go to Checklists
           </Button>
-          <Button onClick={() => navigate("/app/temps")} variant="outline" className="gap-2">
+          <Button
+            onClick={() => navigate("/app/temps")}
+            variant="outline"
+            className="gap-2"
+          >
             <Thermometer className="w-4 h-4" />
             Temps
           </Button>
@@ -440,7 +537,9 @@ export default function Dashboard() {
           </div>
 
           {(activeSite as any)?.status ? (
-            <Badge variant={(activeSite as any).status === "active" ? "default" : "secondary"}>
+            <Badge
+              variant={(activeSite as any).status === "active" ? "default" : "secondary"}
+            >
               {(activeSite as any).status}
             </Badge>
           ) : null}
@@ -452,7 +551,9 @@ export default function Dashboard() {
             onClick={() => {
               if (!activeCompanyId) return;
               const siteGuess =
-                activeSite?.id || activeSiteId || "00000000-0000-0000-0000-000000000000";
+                activeSite?.id ||
+                activeSiteId ||
+                "00000000-0000-0000-0000-000000000000";
               load(activeCompanyId, siteGuess);
             }}
             disabled={loading || !activeCompanyId}
@@ -462,7 +563,11 @@ export default function Dashboard() {
             Refresh
           </Button>
 
-          <Button onClick={() => navigate("/app/checks")} disabled={!activeSite?.id} className="gap-2">
+          <Button
+            onClick={() => navigate("/app/checks")}
+            disabled={!activeSite?.id}
+            className="gap-2"
+          >
             Start a checklist <ArrowRight className="w-4 h-4" />
           </Button>
         </div>
@@ -505,7 +610,7 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Corrective actions */}
+      {/* Temps corrective actions */}
       <Card className="mt-6">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -554,13 +659,19 @@ export default function Dashboard() {
                         </span>
                         {" • "}
                         Created:{" "}
-                        {a.created_at ? new Date(a.created_at).toLocaleString() : "—"}
+                        {a.created_at
+                          ? new Date(a.created_at).toLocaleString()
+                          : "—"}
                       </div>
 
                       {a.details ? (
                         <div className="mt-2 text-sm">
-                          <div className="text-xs text-muted-foreground">What needs doing</div>
-                          <div className="mt-1 whitespace-pre-line">{a.details}</div>
+                          <div className="text-xs text-muted-foreground">
+                            What needs doing
+                          </div>
+                          <div className="mt-1 whitespace-pre-line">
+                            {a.details}
+                          </div>
                         </div>
                       ) : null}
 
@@ -596,7 +707,9 @@ export default function Dashboard() {
                               disabled={actionsLoading}
                               className="gap-2"
                             >
-                              {completingId === a.id ? "Completing…" : "Save & Complete"}
+                              {completingId === a.id
+                                ? "Completing…"
+                                : "Save & Complete"}
                             </Button>
                           </div>
                         </div>
@@ -626,7 +739,85 @@ export default function Dashboard() {
         </CardContent>
       </Card>
 
-      {/* Recently completed corrective actions (RESTORED / NEW) */}
+      {/* EHO Actions */}
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Cross className="w-5 h-5" />
+            EHO actions
+            {ehoOpenCount > 0 ? (
+              <Badge variant={ehoOverdueCount > 0 ? "destructive" : "secondary"}>
+                {ehoOverdueCount > 0 ? `${ehoOverdueCount} overdue` : `${ehoOpenCount} open`}
+              </Badge>
+            ) : null}
+          </CardTitle>
+          <CardDescription>
+            Actions raised from EHO/inspection visits for this site.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="text-sm text-muted-foreground">Loading…</div>
+          ) : ehoActions.length === 0 ? (
+            <div className="text-sm text-muted-foreground">
+              No open EHO actions ✅
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {ehoActions.slice(0, 12).map((a) => {
+                const overdue = isOverdueDateOnly(a.due_date);
+                return (
+                  <div
+                    key={a.id}
+                    className={cn(
+                      "rounded-lg border p-3 flex items-start justify-between gap-3",
+                      overdue ? "border-red-200 bg-red-50" : "border-border"
+                    )}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="font-semibold truncate">
+                          {a.action_text}
+                        </div>
+                        {overdue ? (
+                          <Badge variant="destructive">overdue</Badge>
+                        ) : (
+                          <Badge variant="secondary">open</Badge>
+                        )}
+                        <Badge variant="outline">{formatRole(a.assigned_role)}</Badge>
+                      </div>
+
+                      <div className="text-xs text-muted-foreground mt-1">
+                        <span className={cn(overdue && "text-red-600 font-medium")}>
+                          Due: {a.due_date ?? "—"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => navigate("/app/eho")}
+                      >
+                        Open
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {ehoActions.length > 12 ? (
+                <div className="text-xs text-muted-foreground pt-2">
+                  Showing 12 of {ehoActions.length}.
+                </div>
+              ) : null}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Recently completed corrective actions */}
       <Card className="mt-6">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -641,7 +832,9 @@ export default function Dashboard() {
           {loading ? (
             <div className="text-sm text-muted-foreground">Loading…</div>
           ) : recentActions.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No completed actions yet.</div>
+            <div className="text-sm text-muted-foreground">
+              No completed actions yet.
+            </div>
           ) : (
             <div className="space-y-2">
               {recentActions.map((a) => (
@@ -649,26 +842,32 @@ export default function Dashboard() {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="font-semibold truncate">{a.title}</div>
                     <Badge variant="secondary">
-                      Completed {a.action_logged_at ? formatDue(a.action_logged_at) : "—"}
+                      Completed{" "}
+                      {a.action_logged_at ? formatDue(a.action_logged_at) : "—"}
                     </Badge>
                   </div>
 
                   {a.details ? (
                     <div className="mt-2 text-sm">
-                      <div className="text-xs text-muted-foreground">What needed doing</div>
+                      <div className="text-xs text-muted-foreground">
+                        What needed doing
+                      </div>
                       <div className="mt-1 whitespace-pre-line">{a.details}</div>
                     </div>
                   ) : null}
 
                   <div className="mt-2 text-sm">
-                    <div className="text-xs text-muted-foreground">What was done</div>
+                    <div className="text-xs text-muted-foreground">
+                      What was done
+                    </div>
                     <div className="mt-1 whitespace-pre-line">
                       {(a as any).action_completed_notes || "—"}
                     </div>
                   </div>
 
                   <div className="mt-2 text-xs text-muted-foreground">
-                    Original due: {formatDue(a.due_at)} • Logged: {formatDue(a.action_logged_at)}
+                    Original due: {formatDue(a.due_at)} • Logged:{" "}
+                    {formatDue(a.action_logged_at)}
                   </div>
                 </div>
               ))}
@@ -694,17 +893,26 @@ export default function Dashboard() {
           ) : (
             <>
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={tempsKpis.assetsOk ? "default" : "destructive"} className="gap-2">
+                <Badge
+                  variant={tempsKpis.assetsOk ? "default" : "destructive"}
+                  className="gap-2"
+                >
                   <Snowflake className="w-4 h-4" />
-                  Assets temps {tempsKpis.assetRecorded} / {tempsKpis.targetAssetTemps}
+                  Assets temps {tempsKpis.assetRecorded} /{" "}
+                  {tempsKpis.targetAssetTemps}
                 </Badge>
 
-                <Badge variant={tempsKpis.foodOk ? "secondary" : "destructive"} className="gap-2">
+                <Badge
+                  variant={tempsKpis.foodOk ? "secondary" : "destructive"}
+                  className="gap-2"
+                >
                   <Utensils className="w-4 h-4" />
                   Food temps {tempsKpis.foodRecorded} / {tempsKpis.targetFoodTemps}
                 </Badge>
 
-                <Badge variant="outline">Active cold assets: {tempsKpis.assetCount}</Badge>
+                <Badge variant="outline">
+                  Active cold assets: {tempsKpis.assetCount}
+                </Badge>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -815,7 +1023,9 @@ export default function Dashboard() {
                       </div>
                       <div className="text-xs text-muted-foreground">
                         Completed{" "}
-                        {r.completed_at ? new Date(r.completed_at).toLocaleString() : "—"}
+                        {r.completed_at
+                          ? new Date(r.completed_at).toLocaleString()
+                          : "—"}
                       </div>
                     </div>
                     <Badge variant="secondary">done</Badge>
@@ -864,7 +1074,11 @@ function StatCard(props: {
       </div>
       <div className="mt-2 text-3xl font-extrabold">{loading ? "—" : value}</div>
       <div className="mt-1 text-xs text-muted-foreground">
-        {tone === "danger" ? "Needs action" : tone === "warn" ? "Due today" : "Good progress"}
+        {tone === "danger"
+          ? "Needs action"
+          : tone === "warn"
+          ? "Due today"
+          : "Good progress"}
       </div>
     </div>
   );
@@ -890,7 +1104,12 @@ function RunRow(props: {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="font-semibold truncate">{title}</div>
-          <div className={cn("text-xs", tone === "danger" ? "text-red-600" : "text-muted-foreground")}>
+          <div
+            className={cn(
+              "text-xs",
+              tone === "danger" ? "text-red-600" : "text-muted-foreground"
+            )}
+          >
             {subtitle}
           </div>
         </div>

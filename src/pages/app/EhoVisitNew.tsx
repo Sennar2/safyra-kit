@@ -8,7 +8,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const RATING = ["0", "1", "2", "3", "4", "5"] as const;
 
@@ -38,15 +44,15 @@ export default function EhoVisitNew() {
 
   const [saving, setSaving] = useState(false);
 
-  // Visit fields (required: officerName, visitDate, visitTime)
+  // Required
   const [visitDate, setVisitDate] = useState("");
   const [visitTime, setVisitTime] = useState("");
   const [officerName, setOfficerName] = useState("");
 
+  // Optional
   const [councilName, setCouncilName] = useState("");
   const [officerEmail, setOfficerEmail] = useState("");
   const [officerPhone, setOfficerPhone] = useState("");
-
   const [overallRating, setOverallRating] = useState<string>("");
 
   const [foodRating, setFoodRating] = useState<string>("");
@@ -60,12 +66,10 @@ export default function EhoVisitNew() {
 
   const [notes, setNotes] = useState("");
 
-  // Actions (default assignee: Restaurant Manager)
   const [actions, setActions] = useState<ActionDraft[]>([
     { id: uid(), action_text: "", assigned_role: "restaurant_manager", due_date: null },
   ]);
 
-  // Upload
   const [files, setFiles] = useState<File[]>([]);
 
   const canSave = useMemo(() => {
@@ -129,7 +133,6 @@ export default function EhoVisitNew() {
 
     setSaving(true);
     try {
-      // 1) Create visit
       const { data: visit, error: visitErr } = await supabase
         .from("eho_visits")
         .insert({
@@ -137,7 +140,7 @@ export default function EhoVisitNew() {
           site_id: activeSiteId,
           visit_date: visitDate,
           visit_time: visitTime,
-          officer_name: officerName.trim(), // REQUIRED
+          officer_name: officerName.trim(),
           council_name: councilName.trim() || null,
           officer_email: officerEmail.trim() || null,
           officer_phone: officerPhone.trim() || null,
@@ -151,7 +154,6 @@ export default function EhoVisitNew() {
       if (visitErr) throw visitErr;
       const visitId = visit.id as string;
 
-      // 2) Insert sections
       const sections = [
         { section_key: "food_handling", rating: foodRating ? Number(foodRating) : null, comment: foodComment || null },
         { section_key: "structure_cleaning", rating: structureRating ? Number(structureRating) : null, comment: structureComment || null },
@@ -161,10 +163,8 @@ export default function EhoVisitNew() {
       const { error: secErr } = await supabase
         .from("eho_visit_sections")
         .insert(sections.map((s) => ({ visit_id: visitId, ...s })));
-
       if (secErr) throw secErr;
 
-      // 3) Insert actions (only non-empty)
       const toInsert = actions
         .filter((a) => a.action_text.trim().length > 0)
         .map((a) => ({
@@ -180,10 +180,13 @@ export default function EhoVisitNew() {
         if (actErr) throw actErr;
       }
 
-      // 4) Upload files + store metadata
       await uploadFiles(activeCompanyId, activeSiteId, visitId);
 
-      nav(`/app/eho/;
+      // ✅ go back to list
+      nav("/app/eho");
+    } catch (e: any) {
+      console.error("EHO save error:", e);
+      // You can add a toast here if you want
     } finally {
       setSaving(false);
     }
@@ -209,7 +212,6 @@ export default function EhoVisitNew() {
         </div>
       </div>
 
-      {/* Visit details */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Visit details</CardTitle>
@@ -218,23 +220,21 @@ export default function EhoVisitNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="text-sm font-medium">
-              Council (optional)
-            </label>
-            <Input
-              value={councilName}
-              onChange={(e) => setCouncilName(e.target.value)}
-              placeholder="e.g. Wandsworth Council"
-            />
-          </div>
-
-          <div>
-            <label className="text-sm font-medium">
               Officer name <span className="text-red-500">*</span>
             </label>
             <Input
               value={officerName}
               onChange={(e) => setOfficerName(e.target.value)}
               placeholder="Officer full name"
+            />
+          </div>
+
+          <div>
+            <label className="text-sm font-medium">Council (optional)</label>
+            <Input
+              value={councilName}
+              onChange={(e) => setCouncilName(e.target.value)}
+              placeholder="e.g. Wandsworth Council"
             />
           </div>
 
@@ -253,21 +253,21 @@ export default function EhoVisitNew() {
           </div>
 
           <div>
-            <label className="text-sm font-medium">Officer phone (optional)</label>
-            <Input
-              value={officerPhone}
-              onChange={(e) => setOfficerPhone(e.target.value)}
-              placeholder="e.g. 0207…"
-            />
-          </div>
-
-          <div>
             <label className="text-sm font-medium">Officer email (optional)</label>
             <Input
               type="email"
               value={officerEmail}
               onChange={(e) => setOfficerEmail(e.target.value)}
               placeholder="name@council.gov.uk"
+            />
+          </div>
+
+          <div>
+            <label className="text-sm font-medium">Officer phone (optional)</label>
+            <Input
+              value={officerPhone}
+              onChange={(e) => setOfficerPhone(e.target.value)}
+              placeholder="e.g. 0207…"
             />
           </div>
 
@@ -294,7 +294,6 @@ export default function EhoVisitNew() {
         </CardContent>
       </Card>
 
-      {/* Section ratings */}
       <div className="grid grid-cols-1 gap-4">
         <Card>
           <CardHeader>
@@ -313,7 +312,11 @@ export default function EhoVisitNew() {
                 ))}
               </SelectContent>
             </Select>
-            <Textarea placeholder="Comment" value={foodComment} onChange={(e) => setFoodComment(e.target.value)} />
+            <Textarea
+              placeholder="Comment"
+              value={foodComment}
+              onChange={(e) => setFoodComment(e.target.value)}
+            />
           </CardContent>
         </Card>
 
@@ -368,7 +371,6 @@ export default function EhoVisitNew() {
         </Card>
       </div>
 
-      {/* Action plan */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Action plan</CardTitle>
@@ -378,7 +380,11 @@ export default function EhoVisitNew() {
             <div key={a.id} className="rounded-lg border p-3 space-y-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="font-medium">Action {idx + 1}</div>
-                <Button variant="outline" onClick={() => removeActionRow(a.id)} disabled={actions.length === 1}>
+                <Button
+                  variant="outline"
+                  onClick={() => removeActionRow(a.id)}
+                  disabled={actions.length === 1}
+                >
                   Remove
                 </Button>
               </div>
@@ -437,14 +443,15 @@ export default function EhoVisitNew() {
         </CardContent>
       </Card>
 
-      {/* Upload */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Upload EHO report / evidence</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <Input type="file" multiple onChange={(e) => onFilesPicked(e.target.files)} />
-          {files.length > 0 && <div className="text-sm text-muted-foreground">{files.length} file(s) selected</div>}
+          {files.length > 0 ? (
+            <div className="text-sm text-muted-foreground">{files.length} file(s) selected</div>
+          ) : null}
           <div className="text-sm text-muted-foreground">
             Tip: Upload the official EHO report PDF + any improvement notices + photos.
           </div>
