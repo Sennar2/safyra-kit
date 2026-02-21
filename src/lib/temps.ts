@@ -75,6 +75,7 @@ export type TempRecordRow = {
   delivery_item?: string | null;
   supplier?: string | null;
   delivery_result?: string | null;
+  supplier_delivery_id?: string | null;
 
   // action fields (DB)
   requires_action?: boolean | null;
@@ -431,6 +432,7 @@ export async function createTempRecord(input: {
   deliveryItem?: string | null;
   supplier?: string | null;
   deliveryResult?: DeliveryResult | string | null;
+  supplierDeliveryId?: string | null;
 
   // action fields (DB names)
   requiresAction?: boolean;
@@ -512,6 +514,41 @@ export async function createDeliveryTempRecord(input: {
     requiresAction: input.requiresAction,
     actionNotes: input.actionNotes ?? null,
     actionDueAt: input.actionDueAt ?? null,
+    
+  });
+}
+
+export async function createDeliveryTempRecord(input: {
+  companyId: string;
+  siteId: string;
+  valueC: number;
+  probeId?: string | null;
+  notes?: string | null;
+
+  itemName: string;
+  supplier?: string | null;
+  deliveryResult: DeliveryResult;
+
+  requiresAction: boolean;
+  actionNotes?: string | null;
+  actionDueAt?: string | null;
+
+  supplierDeliveryId?: string | null; // NEW
+}) {
+  return createTempRecord({
+    companyId: input.companyId,
+    siteId: input.siteId,
+    kind: "delivery",
+    valueC: input.valueC,
+    probeId: input.probeId ?? null,
+    notes: input.notes ?? null,
+    deliveryItem: input.itemName,
+    supplier: input.supplier ?? null,
+    deliveryResult: input.deliveryResult,
+    requiresAction: input.requiresAction,
+    actionNotes: input.actionNotes ?? null,
+    actionDueAt: input.actionDueAt ?? null,
+    supplierDeliveryId: input.supplierDeliveryId ?? null, // NEW
   });
 }
 
