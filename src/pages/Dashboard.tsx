@@ -2,6 +2,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
+import {
+  listOpenIncidentActions,
+  completeIncidentAction,
+  type IncidentActionRow,
+} from "@/lib/incidents";
+
 import { useTenant } from "@/lib/tenantContext";
 import {
   getDashboardChecklistSummary,
@@ -163,12 +169,7 @@ async function listOpenEhoActions(companyId: string, siteId: string, limit = 50)
       due_date,
       status,
       assigned_role,
-      eho_visits!inner (
-        id,
-        company_id,
-        site_id
-      )
-    `
+      eho_visits!inner (id, company_id, site_id)`
     )
     .eq("status", "open")
     .eq("eho_visits.company_id", companyId)

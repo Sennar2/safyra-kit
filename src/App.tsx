@@ -26,6 +26,8 @@ import Dashboard from "@/pages/Dashboard";
 import DailyChecks from "@/pages/DailyChecks";
 import CheckRun from "@/pages/app/CheckRun";
 import Incidents from "@/pages/Incidents";
+import IncidentNew from "@/pages/app/IncidentNew";
+import IncidentDetail from "@/pages/app/IncidentDetail";
 import HACCP from "@/pages/HACCP";
 import Training from "@/pages/Training";
 
@@ -112,11 +114,14 @@ export default function App() {
                       {/* Other modules */}
                       <Route path="/app/suppliers" element={<Suppliers />} />
                       <Route path="/app/incidents" element={<Incidents />} />
+<Route path="/app/incidents/new" element={<IncidentNew />} />
+<Route path="/app/incidents/:id" element={<IncidentDetail />} />
                       <Route path="/app/eho" element={<EhoVisits />} />
                       <Route path="/app/eho/new" element={<EhoVisitNew />} />
                       <Route path="/app/eho/:visitId" element={<EhoVisitDetail />} />
                       <Route path="/app/haccp" element={<HACCP />} />
                       <Route path="/app/training" element={<Training />} />
+                      
                     </Route>
                   </Route>
                 </Route>
