@@ -4,10 +4,14 @@ import { supabase } from "@/integrations/supabase/client";
 import { useTenant } from "@/lib/tenantContext";
 import {
   getIncident,
+  updateIncident,
   listIncidentActions,
   completeIncidentAction,
+  listIncidentTemplates,
+  getIncidentTemplateById,
   type IncidentActionRow,
   type IncidentRow,
+  type IncidentTemplateRow,
 } from "@/lib/incidents";
 
 import { Button } from "@/components/ui/button";
@@ -17,7 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { ArrowLeft, Paperclip, CheckCircle2, AlertTriangle, Upload } from "lucide-react";
+import { ArrowLeft, Paperclip, CheckCircle2, AlertTriangle, Upload, Save } from "lucide-react";
 
 const ASSIGNEE_ROLES = [
   { value: "head_office", label: "Head Office" },
@@ -40,7 +44,6 @@ function isOverdue(dueDate?: string | null) {
   if (!dueDate) return false;
   const t = new Date(dueDate).getTime();
   if (Number.isNaN(t)) return false;
-  // due_date is date-only, treat as end of day
   const end = new Date(dueDate);
   end.setHours(23, 59, 59, 999);
   return end.getTime() < Date.now();
@@ -58,6 +61,190 @@ function typeBadge(t: IncidentRow["type"]) {
   return <Badge variant="outline">Incident</Badge>;
 }
 
+function templateKindBadge(tpl: IncidentTemplateRow | null, companyId: string | null) {
+  if (!tpl) return null;
+  const isLegal = tpl.company_id === null && tpl.is_legally_approved;
+  const isCompany = !!companyId && tpl.company_id === companyId;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Badge variant={isLegal ? "secondary" : "outline"}>
+        {isLegal ? "Legally approved template" : isCompany ? "Company template" : "Template"}
+      </Badge>
+      <span className="text-xs text-muted-foreground truncate max-w-[360px]">{tpl.name}</span>
+    </div>
+  );
+}
+
+/**
+ * Clickable body map field (simple but effective).
+ * Stores region key into form_data[fieldKey].
+ *
+ * If you want a more detailed anatomical SVG later, we can swap this component
+ * while keeping the exact same data stored in form_data.
+ */
+function BodyMapField(props: {
+  label: string;
+  value: string | null;
+  onChange: (v: string) => void;
+  regions: { key: string; label: string }[];
+}) {
+  const { label, value, onChange, regions } = props;
+  const [side, setSide] = useState<"front" | "back">("front");
+
+  const visibleRegions = useMemo(() => {
+    return regions.filter((r) => r.key.startsWith(side));
+  }, [regions, side]);
+
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium">{label}</div>
+
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant={side === "front" ? "default" : "outline"}
+          onClick={() => setSide("front")}
+        >
+          Front
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={side === "back" ? "default" : "outline"}
+          onClick={() => setSide("back")}
+        >
+          Back
+        </Button>
+
+        {value ? <Badge variant="secondary">Selected: {value.replaceAll("_", " ")}</Badge> : null}
+      </div>
+
+      {/* Simple clickable “map” area + list */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="rounded-lg border p-3">
+          <div className="text-xs text-muted-foreground mb-2">Click an area</div>
+
+          {/* Simple silhouette-ish SVG with clickable zones */}
+          <svg viewBox="0 0 220 420" className="w-full max-w-[260px] mx-auto">
+            {/* body outline */}
+            <path
+              d="M110 20
+                 C95 20 85 32 85 45
+                 C85 62 95 72 110 72
+                 C125 72 135 62 135 45
+                 C135 32 125 20 110 20 Z
+                 M80 90
+                 C78 70 92 65 110 65
+                 C128 65 142 70 140 90
+                 L140 150
+                 C140 160 150 170 160 180
+                 L175 210
+                 C180 220 175 230 165 225
+                 L145 195
+                 C142 190 138 190 136 200
+                 L130 260
+                 L145 340
+                 C147 355 140 365 128 360
+                 L115 300
+                 L105 300
+                 L92 360
+                 C80 365 73 355 75 340
+                 L90 260
+                 L84 200
+                 C82 190 78 190 75 195
+                 L55 225
+                 C45 230 40 220 45 210
+                 L60 180
+                 C70 170 80 160 80 150 Z"
+              fill="none"
+              stroke="currentColor"
+              opacity="0.25"
+              strokeWidth="2"
+            />
+
+            {/* clickable zones (simple rectangles/circles) */}
+            {[
+              { key: `${side}_head`, x: 95, y: 22, w: 30, h: 30 },
+              { key: `${side}_neck`, x: 100, y: 55, w: 20, h: 15 },
+              { key: `${side}_chest`, x: 88, y: 85, w: 44, h: 40 },
+              { key: `${side}_abdomen`, x: 90, y: 125, w: 40, h: 40 },
+              { key: `${side}_pelvis`, x: 92, y: 165, w: 36, h: 30 },
+
+              { key: `${side}_left_arm`, x: 55, y: 105, w: 22, h: 70 },
+              { key: `${side}_right_arm`, x: 143, y: 105, w: 22, h: 70 },
+
+              { key: `${side}_left_hand`, x: 45, y: 185, w: 22, h: 22 },
+              { key: `${side}_right_hand`, x: 155, y: 185, w: 22, h: 22 },
+
+              { key: `${side}_left_leg`, x: 86, y: 200, w: 24, h: 90 },
+              { key: `${side}_right_leg`, x: 110, y: 200, w: 24, h: 90 },
+
+              { key: `${side}_left_foot`, x: 80, y: 295, w: 26, h: 18 },
+              { key: `${side}_right_foot`, x: 114, y: 295, w: 26, h: 18 },
+
+              { key: `${side}_upper_back`, x: 90, y: 95, w: 40, h: 35 },
+              { key: `${side}_lower_back`, x: 92, y: 135, w: 36, h: 35 },
+            ]
+              // only show zones that exist in regions list
+              .filter((z) => regions.some((r) => r.key === z.key))
+              .map((z) => {
+                const selected = value === z.key;
+                return (
+                  <rect
+                    key={z.key}
+                    x={z.x}
+                    y={z.y}
+                    width={z.w}
+                    height={z.h}
+                    rx="6"
+                    ry="6"
+                    fill={selected ? "currentColor" : "transparent"}
+                    opacity={selected ? 0.18 : 0.08}
+                    stroke="currentColor"
+                    strokeOpacity={selected ? 0.55 : 0.25}
+                    onClick={() => onChange(z.key)}
+                    style={{ cursor: "pointer" }}
+                  />
+                );
+              })}
+          </svg>
+
+          <div className="text-xs text-muted-foreground mt-2">
+            Tip: click on the diagram or choose from the list.
+          </div>
+        </div>
+
+        <div className="rounded-lg border p-3">
+          <div className="text-xs text-muted-foreground mb-2">Areas ({side})</div>
+          <div className="grid grid-cols-1 gap-2">
+            {visibleRegions.map((r) => {
+              const selected = value === r.key;
+              return (
+                <button
+                  key={r.key}
+                  type="button"
+                  onClick={() => onChange(r.key)}
+                  className={cn(
+                    "text-left rounded-md border px-3 py-2 text-sm transition",
+                    selected ? "bg-muted border-foreground/20" : "hover:bg-muted/40"
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate">{r.label}</span>
+                    {selected ? <Badge variant="secondary">selected</Badge> : null}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function IncidentDetail() {
   const nav = useNavigate();
   const { id } = useParams();
@@ -68,6 +255,14 @@ export default function IncidentDetail() {
   const [actions, setActions] = useState<IncidentActionRow[]>([]);
   const [attachments, setAttachments] = useState<AttachmentRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
+
+  // Template
+  const [template, setTemplate] = useState<IncidentTemplateRow | null>(null);
+
+  // form state (incident.form_data)
+  const [formData, setFormData] = useState<Record<string, any>>({});
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
 
   // complete notes per action
   const [completeNotes, setCompleteNotes] = useState<Record<string, string>>({});
@@ -83,16 +278,37 @@ export default function IncidentDetail() {
   const [uploading, setUploading] = useState(false);
 
   const openActions = useMemo(() => actions.filter((a) => a.status === "open"), [actions]);
-  const doneActions = useMemo(() => actions.filter((a) => a.status === "done"), [actions]);
+  const completedActions = useMemo(() => actions.filter((a) => a.status === "completed"), [actions]);
 
+  
   const load = async () => {
     if (!id) return;
     setErr(null);
     setLoading(true);
+
     try {
       const [inc, acts] = await Promise.all([getIncident(id), listIncidentActions(id)]);
       setIncident(inc);
       setActions(acts);
+
+      const initialForm = (inc.form_data ?? {}) as Record<string, any>;
+      setFormData(initialForm);
+      setDirty(false);
+
+      // Load template:
+      // 1) If incident has template_id -> load that template
+      // 2) Else: pick template by incident type (company override wins) if companyId exists
+      let tpl: IncidentTemplateRow | null = null;
+
+      if (inc.template_id) {
+        tpl = await getIncidentTemplateById(inc.template_id);
+      } else if (activeCompanyId) {
+        const candidates = await listIncidentTemplates(activeCompanyId, inc.type);
+        // template_key is same as type
+        tpl = candidates.find((t) => t.template_key === inc.type) ?? (candidates[0] ?? null);
+      }
+
+      setTemplate(tpl);
 
       // attachments
       const { data: atts, error: attErr } = await supabase
@@ -109,6 +325,9 @@ export default function IncidentDetail() {
       setIncident(null);
       setActions([]);
       setAttachments([]);
+      setTemplate(null);
+      setFormData({});
+      setDirty(false);
     } finally {
       setLoading(false);
     }
@@ -118,6 +337,29 @@ export default function IncidentDetail() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  function setField(key: string, value: any) {
+    setFormData((p) => ({ ...p, [key]: value }));
+    setDirty(true);
+  }
+
+  async function saveForm() {
+    if (!incident) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      await updateIncident(incident.id, {
+        form_data: formData,
+        // keep template_id if template loaded and not already set
+        template_id: incident.template_id ?? template?.id ?? null,
+      } as any);
+      await load();
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to save form");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function addAction() {
     if (!id || !activeCompanyId || !activeSiteId) return;
@@ -228,34 +470,45 @@ export default function IncidentDetail() {
           <ArrowLeft className="w-4 h-4" />
           Back
         </Button>
-        <div className="rounded-lg border p-4 text-sm text-muted-foreground">
-          Unable to load incident.
-        </div>
+        <div className="rounded-lg border p-4 text-sm text-muted-foreground">Unable to load incident.</div>
         {err ? <div className="text-sm text-red-700">{err}</div> : null}
       </div>
     );
   }
 
+  const schemaSections = (template?.schema?.sections ?? []) as any[];
+
   return (
     <div className="p-6 space-y-6 max-w-6xl">
       <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
+        <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-2xl font-semibold truncate">{incident.title}</h1>
             {typeBadge(incident.type)}
             <Badge variant={incident.status === "open" ? "secondary" : "outline"}>{incident.status}</Badge>
           </div>
-          <div className="text-sm text-muted-foreground mt-1">
+          <div className="text-sm text-muted-foreground">
             Occurred: {formatDateTime(incident.occurred_at)}
             {incident.location ? ` • ${incident.location}` : ""}
             {incident.reported_by ? ` • Reported by ${incident.reported_by}` : ""}
           </div>
+
+          {templateKindBadge(template, activeCompanyId ?? null)}
         </div>
 
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => nav("/app/incidents")} className="gap-2">
             <ArrowLeft className="w-4 h-4" />
             Back
+          </Button>
+
+          <Button
+            onClick={saveForm}
+            disabled={saving || !dirty}
+            className="gap-2"
+          >
+            <Save className="w-4 h-4" />
+            {saving ? "Saving…" : dirty ? "Save" : "Saved"}
           </Button>
         </div>
       </div>
@@ -264,20 +517,158 @@ export default function IncidentDetail() {
         <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{err}</div>
       ) : null}
 
+      {/* Template-driven form */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Description</CardTitle>
-          <CardDescription>What happened and what was done immediately.</CardDescription>
+          <CardTitle className="text-base">Incident form</CardTitle>
+          <CardDescription>
+            This form is driven by the selected template (legally approved or your company version).
+          </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div>
-            <div className="text-xs text-muted-foreground">Details</div>
-            <div className="mt-1 whitespace-pre-line">{incident.description || "—"}</div>
-          </div>
-          <div>
-            <div className="text-xs text-muted-foreground">Immediate action</div>
-            <div className="mt-1 whitespace-pre-line">{incident.immediate_action || "—"}</div>
-          </div>
+        <CardContent className="space-y-6">
+          {!template ? (
+            <div className="text-sm text-muted-foreground">
+              No template found for this incident type. Seed the legal templates in <code>incident_templates</code> and/or set <code>incidents.template_id</code>.
+            </div>
+          ) : schemaSections.length === 0 ? (
+            <div className="text-sm text-muted-foreground">Template schema has no sections.</div>
+          ) : (
+            schemaSections.map((sec, idx) => (
+              <div key={`${sec.title ?? "section"}-${idx}`} className="rounded-lg border p-4 space-y-4">
+                <div>
+                  <div className="font-semibold">{sec.title}</div>
+                  {sec.description ? <div className="text-sm text-muted-foreground">{sec.description}</div> : null}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {(sec.fields ?? []).map((f: any) => {
+                    // 🔥 Conditional visibility
+if (f.show_if) {
+  const currentValue = formData?.[f.show_if.key];
+  if (currentValue !== f.show_if.equals) {
+    return null;
+  }
+}
+                    const value = formData?.[f.key] ?? "";
+
+                    // YES/NO as select for simplicity (buttons are also possible)
+                    if (f.type === "yesno") {
+                      return (
+                        <div key={f.key} className="space-y-2">
+                          <div className="text-sm font-medium">
+                            {f.label} {f.required ? <span className="text-red-600">*</span> : null}
+                          </div>
+                          <Select
+                            value={value === true ? "yes" : value === false ? "no" : ""}
+                            onValueChange={(v) => setField(f.key, v === "yes" ? true : v === "no" ? false : null)}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select…" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="yes">Yes</SelectItem>
+                              <SelectItem value="no">No</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          {f.help ? <div className="text-xs text-muted-foreground">{f.help}</div> : null}
+                        </div>
+                      );
+                    }
+
+                    if (f.type === "textarea") {
+                      return (
+                        <div key={f.key} className="space-y-2 md:col-span-2">
+                          <div className="text-sm font-medium">
+                            {f.label} {f.required ? <span className="text-red-600">*</span> : null}
+                          </div>
+                          <Textarea
+                            value={value ?? ""}
+                            onChange={(e) => setField(f.key, e.target.value)}
+                            placeholder={f.placeholder ?? ""}
+                          />
+                          {f.help ? <div className="text-xs text-muted-foreground">{f.help}</div> : null}
+                        </div>
+                      );
+                    }
+
+                    if (f.type === "body_map") {
+                      return (
+                        <div key={f.key} className="md:col-span-2">
+                          <BodyMapField
+                            label={f.label}
+                            value={formData?.[f.key] ?? null}
+                            onChange={(v) => setField(f.key, v)}
+                            regions={f.regions ?? []}
+                          />
+                        </div>
+                      );
+                    }
+
+                    if (f.type === "select" || f.type === "radio") {
+                      const options = Array.isArray(f.options) ? f.options : [];
+                      return (
+                        <div key={f.key} className="space-y-2">
+                          <div className="text-sm font-medium">
+                            {f.label} {f.required ? <span className="text-red-600">*</span> : null}
+                          </div>
+                          <Select value={String(value ?? "")} onValueChange={(v) => setField(f.key, v)}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select…" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {options.map((o: any) => (
+                                <SelectItem key={o.value} value={String(o.value)}>
+                                  {o.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {f.help ? <div className="text-xs text-muted-foreground">{f.help}</div> : null}
+                        </div>
+                      );
+                    }
+
+                    const visible =
+  !f.show_if ||
+  (formData?.[f.show_if.key] === f.show_if.equals);
+
+if (!visible) return null;
+
+                    // default inputs by type
+                    const inputType =
+                      f.type === "date"
+                        ? "date"
+                        : f.type === "time"
+                        ? "time"
+                        : f.type === "datetime"
+                        ? "datetime-local"
+                        : f.type === "email"
+                        ? "email"
+                        : f.type === "tel"
+                        ? "tel"
+                        : f.type === "number"
+                        ? "number"
+                        : "text";
+
+                    return (
+                      <div key={f.key} className="space-y-2">
+                        <div className="text-sm font-medium">
+                          {f.label} {f.required ? <span className="text-red-600">*</span> : null}
+                        </div>
+                        <Input
+                          type={inputType}
+                          value={value ?? ""}
+                          onChange={(e) => setField(f.key, inputType === "number" ? Number(e.target.value) : e.target.value)}
+                          placeholder={f.placeholder ?? ""}
+                        />
+                        {f.help ? <div className="text-xs text-muted-foreground">{f.help}</div> : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))
+          )}
         </CardContent>
       </Card>
 
@@ -334,10 +725,7 @@ export default function IncidentDetail() {
               openActions.map((a) => {
                 const overdue = isOverdue(a.due_date);
                 return (
-                  <div
-                    key={a.id}
-                    className={cn("rounded-lg border p-3 space-y-2", overdue && "border-red-200")}
-                  >
+                  <div key={a.id} className={cn("rounded-lg border p-3 space-y-2", overdue && "border-red-200")}>
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="font-semibold whitespace-pre-line">{a.action_text}</div>
@@ -358,9 +746,7 @@ export default function IncidentDetail() {
                       <Input
                         className="mt-2"
                         value={completeNotes[a.id] ?? ""}
-                        onChange={(e) =>
-                          setCompleteNotes((p) => ({ ...p, [a.id]: e.target.value }))
-                        }
+                        onChange={(e) => setCompleteNotes((p) => ({ ...p, [a.id]: e.target.value }))}
                         placeholder='e.g. "Area repaired, staff briefed, follow-up scheduled."'
                       />
                       <div className="mt-2 flex justify-end">
@@ -381,29 +767,29 @@ export default function IncidentDetail() {
             )}
           </div>
 
-          {/* Done actions */}
+          {/* Completed actions */}
           <div className="space-y-2 pt-2">
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4" />
               <div className="font-medium">Completed</div>
-              <Badge variant="secondary">{doneActions.length}</Badge>
+              <Badge variant="secondary">{completedActions.length}</Badge>
             </div>
 
-            {doneActions.length === 0 ? (
+            {completedActions.length === 0 ? (
               <div className="text-sm text-muted-foreground">No completed actions yet.</div>
             ) : (
-              doneActions.map((a) => (
+              completedActions.map((a) => (
                 <div key={a.id} className="rounded-lg border p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="font-semibold whitespace-pre-line">{a.action_text}</div>
-                    <Badge variant="secondary">done</Badge>
+                    <Badge variant="secondary">completed</Badge>
                   </div>
                   <div className="mt-2 text-sm">
                     <div className="text-xs text-muted-foreground">What was done</div>
-                    <div className="mt-1 whitespace-pre-line">{a.completed_notes || "—"}</div>
+                    <div className="mt-1 whitespace-pre-line">{a.action_completed_notes || "—"}</div>
                   </div>
                   <div className="mt-2 text-xs text-muted-foreground">
-                    Completed: {formatDateTime(a.completed_at)} • Original due: {a.due_date ?? "—"}
+                    Completed: {formatDateTime(a.action_completed_at)} • Original due: {a.due_date ?? "—"}
                   </div>
                 </div>
               ))
@@ -424,19 +810,13 @@ export default function IncidentDetail() {
         <CardContent className="space-y-3">
           <div className="flex flex-col md:flex-row gap-2 md:items-center">
             <Input type="file" multiple onChange={(e) => onFilesPicked(e.target.files)} />
-            <Button
-              onClick={uploadFiles}
-              disabled={!files.length || uploading}
-              className="gap-2 md:w-auto"
-            >
+            <Button onClick={uploadFiles} disabled={!files.length || uploading} className="gap-2 md:w-auto">
               <Upload className="w-4 h-4" />
               {uploading ? "Uploading…" : "Upload"}
             </Button>
           </div>
 
-          {files.length ? (
-            <div className="text-sm text-muted-foreground">{files.length} file(s) selected</div>
-          ) : null}
+          {files.length ? <div className="text-sm text-muted-foreground">{files.length} file(s) selected</div> : null}
 
           {attachments.length === 0 ? (
             <div className="text-sm text-muted-foreground">No attachments yet.</div>

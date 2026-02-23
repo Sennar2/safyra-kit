@@ -119,28 +119,35 @@ export async function updateIncident(incidentId: string, patch: Partial<Incident
 
 export type IncidentTemplateKey = IncidentType;
 
-export type IncidentTemplateFieldType =
-  | "text"
-  | "textarea"
-  | "date"
-  | "time"
-  | "datetime"
-  | "email"
-  | "tel"
-  | "number"
-  | "select"
-  | "radio"
-  | "checkbox"
-  | "yesno";
-
 export type IncidentTemplateField = {
-  key: string; // saved in incidents.form_data[key]
+  key: string;
   label: string;
-  type: IncidentTemplateFieldType;
+  type:
+    | "text"
+    | "number"
+    | "date"
+    | "time"
+    | "datetime"
+    | "email"
+    | "tel"
+    | "textarea"
+    | "yesno"
+    | "select"
+    | "radio"
+    | "body_map";
+
   required?: boolean;
-  placeholder?: string;
   help?: string;
-  options?: { label: string; value: string }[];
+  placeholder?: string;
+
+  options?: { label: string; value: string | number }[];
+  regions?: { key: string; label: string }[];
+
+  // 🔥 ADD THIS:
+  show_if?: {
+    key: string;
+    equals: any;
+  };
 };
 
 export type IncidentTemplateSection = {
