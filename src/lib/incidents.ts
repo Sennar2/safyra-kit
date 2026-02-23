@@ -1,6 +1,10 @@
 // src/lib/incidents.ts
 import { supabase } from "@/integrations/supabase/client";
 
+// =======================================================
+// Incidents
+// =======================================================
+
 export type IncidentType = "incident" | "accident" | "near_miss";
 export type IncidentStatus = "open" | "closed";
 
@@ -18,7 +22,7 @@ export type IncidentRow = {
   reported_by: string | null;
   description: string | null;
 
-  // NEW (optional): template + dynamic form answers
+  // Templates + dynamic fields (optional)
   template_id?: string | null;
   form_data?: Record<string, any>;
 
@@ -38,6 +42,19 @@ export async function listIncidents(companyId: string, siteId: string, limit = 8
 
   if (error) throw error;
   return (data ?? []) as IncidentRow[];
+}
+
+export async function getIncident(incidentId: string) {
+  const { data, error } = await supabase
+    .from("incidents")
+    .select(
+      "id, company_id, site_id, title, type, status, occurred_at, location, reported_by, description, template_id, form_data, created_at"
+    )
+    .eq("id", incidentId)
+    .single();
+
+  if (error) throw error;
+  return data as IncidentRow;
 }
 
 export async function createIncident(input: {
@@ -156,7 +173,7 @@ export type IncidentTemplateRow = {
 };
 
 /**
- * Fetches templates visible to a company:
+ * Fetch templates visible to the company:
  * - legal: company_id is null
  * - company: company_id = companyId
  *
@@ -247,7 +264,7 @@ export async function upsertCompanyIncidentTemplate(input: {
 }
 
 // =======================================================
-// Incident Actions (Dashboard depends on these)
+// Incident Actions (Detail page + Dashboard depend on these)
 // =======================================================
 
 export type IncidentActionRow = {
@@ -282,6 +299,47 @@ export async function listOpenIncidentActions(companyId: string, siteId: string,
   return (data ?? []) as IncidentActionRow[];
 }
 
+/** Used by IncidentDetail.tsx */
+export async function listIncidentActions(incidentId: string) {
+  const { data, error } = await supabase
+    .from("incident_actions")
+    .select("*")
+    .eq("incident_id", incidentId)
+    .order("created_at", { ascending: true });
+
+  if (error) throw error;
+  return (data ?? []) as IncidentActionRow[];
+}
+
+/** Optional helper (commonly used in detail page) */
+export async function createIncidentAction(input: {
+  company_id: string;
+  site_id: string;
+  incident_id: string;
+  action_text: string;
+  due_date?: string | null; // date-only
+  assigned_role?: string | null;
+}) {
+  const payload: any = {
+    company_id: input.company_id,
+    site_id: input.site_id,
+    incident_id: input.incident_id,
+    action_text: input.action_text,
+    due_date: input.due_date ?? null,
+    assigned_role: input.assigned_role ?? null,
+    status: "open",
+  };
+
+  const { data, error } = await supabase
+    .from("incident_actions")
+    .insert(payload)
+    .select("*")
+    .single();
+
+  if (error) throw error;
+  return data as IncidentActionRow;
+}
+
 export async function completeIncidentAction(actionId: string, notes: string) {
   const { data: auth } = await supabase.auth.getUser();
   const userId = auth?.user?.id ?? null;
@@ -293,6 +351,19 @@ export async function completeIncidentAction(actionId: string, notes: string) {
       action_completed_notes: notes,
       action_completed_at: new Date().toISOString(),
       action_completed_by: userId,
+    })
+    .eq("id", actionId);
+
+  if (error) throw error;
+}
+
+export async function cancelIncidentAction(actionId: string, notes?: string) {
+  const { error } = await supabase
+    .from("incident_actions")
+    .update({
+      status: "cancelled",
+      action_completed_notes: notes ?? null,
+      action_completed_at: new Date().toISOString(),
     })
     .eq("id", actionId);
 
