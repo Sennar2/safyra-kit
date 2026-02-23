@@ -61,6 +61,7 @@ import {
   ListTodo,
   History,
   Cross,
+  FileText,
 } from "lucide-react";
 
 import type React from "react";
@@ -82,7 +83,7 @@ function isOverdue(dueAt?: string | null) {
   return t < Date.now();
 }
 
-// EHO due_date is date-only; overdue if before today (00:00)
+// date-only overdue if before today 00:00
 function isOverdueDateOnly(dueDate?: string | null) {
   if (!dueDate) return false;
   const t = new Date(dueDate).getTime();
@@ -120,7 +121,6 @@ function getWindows(now = new Date()) {
   const pmStart = new Date(dayStart);
   pmStart.setHours(14, 0, 0, 0);
 
-  // 02:00 next day
   const pmEnd = new Date(dayStart);
   pmEnd.setHours(2, 0, 0, 0);
   pmEnd.setTime(addDays(pmEnd, 1).getTime());
@@ -189,6 +189,27 @@ async function listOpenEhoActions(companyId: string, siteId: string, limit = 50)
   })) as EhoActionRow[];
 }
 
+// ✅ recently completed incident actions (status=done)
+async function listRecentlyCompletedIncidentActions(
+  companyId: string,
+  siteId: string,
+  limit = 8
+) {
+  const { data, error } = await supabase
+    .from("incident_actions")
+    .select(
+      "id, incident_id, action_text, due_date, assigned_role, status, completed_at, completed_notes, created_at"
+    )
+    .eq("company_id", companyId)
+    .eq("site_id", siteId)
+    .eq("status", "done")
+    .order("completed_at", { ascending: false, nullsFirst: false })
+    .limit(limit);
+
+  if (error) throw error;
+  return (data ?? []) as any[];
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const { activeCompanyId } = useTenant();
@@ -211,11 +232,15 @@ export default function Dashboard() {
   // EHO actions
   const [ehoActions, setEhoActions] = useState<EhoActionRow[]>([]);
 
-  // Completion notes UI
+  // Incident actions
+  const [incidentActions, setIncidentActions] = useState<IncidentActionRow[]>([]);
+  const [recentIncidentActions, setRecentIncidentActions] = useState<any[]>([]);
+  const [incidentNotes, setIncidentNotes] = useState<Record<string, string>>({});
+  const [incidentCompletingId, setIncidentCompletingId] = useState<string | null>(null);
+
+  // Completion notes UI (temps)
   const [completeOpenId, setCompleteOpenId] = useState<string | null>(null);
-  const [completeNotes, setCompleteNotes] = useState<Record<string, string>>(
-    {}
-  );
+  const [completeNotes, setCompleteNotes] = useState<Record<string, string>>({});
   const [completingId, setCompletingId] = useState<string | null>(null);
 
   // Site selection
@@ -239,7 +264,6 @@ export default function Dashboard() {
     setLoading(true);
 
     try {
-      // 1) Checklist summary
       const s = await getDashboardChecklistSummary(companyId, siteIdGuess);
       setSummary(s);
 
@@ -252,6 +276,8 @@ export default function Dashboard() {
         setActions([]);
         setRecentActions([]);
         setEhoActions([]);
+        setIncidentActions([]);
+        setRecentIncidentActions([]);
         return;
       }
 
@@ -260,7 +286,7 @@ export default function Dashboard() {
         localStorage.setItem(localSiteKey(companyId), resolvedSite.id);
       }
 
-      // 2) Temps + Actions + EHO Actions
+      // Load core items first (so dashboard works even if incidents table missing)
       const [assets, today, openActions, completedActions, openEho] =
         await Promise.all([
           listTempAssets(companyId, resolvedSite.id),
@@ -275,6 +301,20 @@ export default function Dashboard() {
       setActions(openActions);
       setRecentActions(completedActions);
       setEhoActions(openEho);
+
+      // Incidents are optional — don’t crash dashboard if table not ready yet
+      try {
+        const [openIncident, recentIncident] = await Promise.all([
+          listOpenIncidentActions(companyId, resolvedSite.id, 50),
+          listRecentlyCompletedIncidentActions(companyId, resolvedSite.id, 8),
+        ]);
+        setIncidentActions(openIncident);
+        setRecentIncidentActions(recentIncident);
+      } catch (ie: any) {
+        console.warn("Incident actions not available yet:", ie);
+        setIncidentActions([]);
+        setRecentIncidentActions([]);
+      }
     } catch (e: any) {
       console.error("Dashboard load error:", e);
       setErr(e?.message ?? "Failed to load dashboard");
@@ -284,6 +324,8 @@ export default function Dashboard() {
       setActions([]);
       setRecentActions([]);
       setEhoActions([]);
+      setIncidentActions([]);
+      setRecentIncidentActions([]);
     } finally {
       setLoading(false);
     }
@@ -306,7 +348,7 @@ export default function Dashboard() {
     );
 
     const assetCount = activeColdAssets.length;
-    const targetAssetTemps = assetCount * 2; // AM + PM
+    const targetAssetTemps = assetCount * 2;
     const targetFoodTemps = 8;
 
     const records = (tempSummary?.recordsToday ?? []) as TempRecordRow[];
@@ -358,24 +400,44 @@ export default function Dashboard() {
     };
   }, [tempAssets, tempSummary]);
 
+  // counts in render scope
   const tempOpenCount = actions.length;
+
   const ehoOpenCount = ehoActions.length;
-  const ehoOverdueCount = ehoActions.filter((a) =>
-    isOverdueDateOnly(a.due_date)
+  const ehoOverdueCount = ehoActions.filter((a) => isOverdueDateOnly(a.due_date)).length;
+
+  const incidentOpenCount = incidentActions.length;
+  const incidentOverdueCount = incidentActions.filter((a: any) =>
+    isOverdueDateOnly((a as any).due_date ?? null)
   ).length;
 
-  const openActionsCount = tempOpenCount + ehoOpenCount;
+  const openActionsCount = tempOpenCount + ehoOpenCount + incidentOpenCount;
 
   const refreshActions = async () => {
     if (!activeCompanyId || !activeSite?.id) return;
+
     const [open, completed, openEho] = await Promise.all([
       listOpenCorrectiveActions(activeCompanyId, activeSite.id, 50),
       listRecentlyCompletedCorrectiveActions(activeCompanyId, activeSite.id, 8),
       listOpenEhoActions(activeCompanyId, activeSite.id, 50),
     ]);
+
     setActions(open);
     setRecentActions(completed);
     setEhoActions(openEho);
+
+    // incidents optional
+    try {
+      const [openIncident, recentIncident] = await Promise.all([
+        listOpenIncidentActions(activeCompanyId, activeSite.id, 50),
+        listRecentlyCompletedIncidentActions(activeCompanyId, activeSite.id, 8),
+      ]);
+      setIncidentActions(openIncident);
+      setRecentIncidentActions(recentIncident);
+    } catch {
+      setIncidentActions([]);
+      setRecentIncidentActions([]);
+    }
   };
 
   const onCompleteAction = async (actionId: string) => {
@@ -394,7 +456,6 @@ export default function Dashboard() {
       setErr(null);
 
       await completeCorrectiveAction(actionId, notes);
-
       await refreshActions();
 
       setCompleteOpenId(null);
@@ -408,15 +469,36 @@ export default function Dashboard() {
     }
   };
 
+  const onCompleteIncident = async (actionId: string) => {
+    const notes = (incidentNotes[actionId] ?? "").trim();
+    if (!notes) {
+      setErr("Please add completion notes for the incident action.");
+      return;
+    }
+
+    try {
+      setIncidentCompletingId(actionId);
+      setErr(null);
+
+      await completeIncidentAction(actionId, notes);
+      await refreshActions();
+
+      setIncidentNotes((p) => ({ ...p, [actionId]: "" }));
+    } catch (e: any) {
+      console.error("completeIncidentAction error:", e);
+      setErr(e?.message ?? "Failed to complete incident action");
+    } finally {
+      setIncidentCompletingId(null);
+    }
+  };
+
   // If no sites, show mandatory setup
   if (!loading && summary && !hasSites) {
     return (
       <div className="p-6 max-w-5xl">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-extrabold tracking-tight">
-              Dashboard
-            </h1>
+            <h1 className="text-3xl font-extrabold tracking-tight">Dashboard</h1>
             <p className="text-sm text-muted-foreground mt-1">
               You need at least one site before you can run checklists and temps.
             </p>
@@ -430,8 +512,7 @@ export default function Dashboard() {
           <CardHeader>
             <CardTitle>Set up your first site</CardTitle>
             <CardDescription>
-              Sites are mandatory. Create a site (e.g. “Kings Road”) then build
-              Opening/Closing checklists for it.
+              Sites are mandatory. Create a site (e.g. “Kings Road”) then build Opening/Closing checklists for it.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -439,8 +520,7 @@ export default function Dashboard() {
               <div className="min-w-0">
                 <div className="font-semibold">1) Create a site</div>
                 <div className="text-sm text-muted-foreground">
-                  Add your first location (address optional). You can add more
-                  later.
+                  Add your first location (address optional). You can add more later.
                 </div>
               </div>
               <Button onClick={() => navigate("/app/sites")} className="gap-2">
@@ -451,12 +531,8 @@ export default function Dashboard() {
 
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-4 opacity-70">
               <div className="min-w-0">
-                <div className="font-semibold">
-                  2) Create checklist templates
-                </div>
-                <div className="text-sm text-muted-foreground">
-                  Opening, Closing, Delivery, Cleaning…
-                </div>
+                <div className="font-semibold">2) Create checklist templates</div>
+                <div className="text-sm text-muted-foreground">Opening, Closing, Delivery, Cleaning…</div>
               </div>
               <Button variant="outline" disabled>
                 Next
@@ -465,12 +541,8 @@ export default function Dashboard() {
 
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-4 opacity-70">
               <div className="min-w-0">
-                <div className="font-semibold">
-                  3) Schedule recurring runs
-                </div>
-                <div className="text-sm text-muted-foreground">
-                  “Opening by 2pm”, “Weekly deep clean”, etc.
-                </div>
+                <div className="font-semibold">3) Schedule recurring runs</div>
+                <div className="text-sm text-muted-foreground">“Opening by 2pm”, “Weekly deep clean”, etc.</div>
               </div>
               <Button variant="outline" disabled>
                 Next
@@ -500,11 +572,7 @@ export default function Dashboard() {
             <ClipboardCheck className="w-4 h-4" />
             Go to Checklists
           </Button>
-          <Button
-            onClick={() => navigate("/app/temps")}
-            variant="outline"
-            className="gap-2"
-          >
+          <Button onClick={() => navigate("/app/temps")} variant="outline" className="gap-2">
             <Thermometer className="w-4 h-4" />
             Temps
           </Button>
@@ -552,9 +620,7 @@ export default function Dashboard() {
             onClick={() => {
               if (!activeCompanyId) return;
               const siteGuess =
-                activeSite?.id ||
-                activeSiteId ||
-                "00000000-0000-0000-0000-000000000000";
+                activeSite?.id || activeSiteId || "00000000-0000-0000-0000-000000000000";
               load(activeCompanyId, siteGuess);
             }}
             disabled={loading || !activeCompanyId}
@@ -660,19 +726,13 @@ export default function Dashboard() {
                         </span>
                         {" • "}
                         Created:{" "}
-                        {a.created_at
-                          ? new Date(a.created_at).toLocaleString()
-                          : "—"}
+                        {a.created_at ? new Date(a.created_at).toLocaleString() : "—"}
                       </div>
 
                       {a.details ? (
                         <div className="mt-2 text-sm">
-                          <div className="text-xs text-muted-foreground">
-                            What needs doing
-                          </div>
-                          <div className="mt-1 whitespace-pre-line">
-                            {a.details}
-                          </div>
+                          <div className="text-xs text-muted-foreground">What needs doing</div>
+                          <div className="mt-1 whitespace-pre-line">{a.details}</div>
                         </div>
                       ) : null}
 
@@ -708,9 +768,7 @@ export default function Dashboard() {
                               disabled={actionsLoading}
                               className="gap-2"
                             >
-                              {completingId === a.id
-                                ? "Completing…"
-                                : "Save & Complete"}
+                              {completingId === a.id ? "Completing…" : "Save & Complete"}
                             </Button>
                           </div>
                         </div>
@@ -729,12 +787,6 @@ export default function Dashboard() {
                   </div>
                 );
               })}
-
-              {actions.length > 12 ? (
-                <div className="text-xs text-muted-foreground pt-2">
-                  Showing 12 of {actions.length}.
-                </div>
-              ) : null}
             </div>
           )}
         </CardContent>
@@ -752,17 +804,13 @@ export default function Dashboard() {
               </Badge>
             ) : null}
           </CardTitle>
-          <CardDescription>
-            Actions raised from EHO/inspection visits for this site.
-          </CardDescription>
+          <CardDescription>Actions raised from EHO/inspection visits for this site.</CardDescription>
         </CardHeader>
         <CardContent>
           {loading ? (
             <div className="text-sm text-muted-foreground">Loading…</div>
           ) : ehoActions.length === 0 ? (
-            <div className="text-sm text-muted-foreground">
-              No open EHO actions ✅
-            </div>
+            <div className="text-sm text-muted-foreground">No open EHO actions ✅</div>
           ) : (
             <div className="space-y-2">
               {ehoActions.slice(0, 12).map((a) => {
@@ -777,9 +825,7 @@ export default function Dashboard() {
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <div className="font-semibold truncate">
-                          {a.action_text}
-                        </div>
+                        <div className="font-semibold truncate">{a.action_text}</div>
                         {overdue ? (
                           <Badge variant="destructive">overdue</Badge>
                         ) : (
@@ -787,7 +833,6 @@ export default function Dashboard() {
                         )}
                         <Badge variant="outline">{formatRole(a.assigned_role)}</Badge>
                       </div>
-
                       <div className="text-xs text-muted-foreground mt-1">
                         <span className={cn(overdue && "text-red-600 font-medium")}>
                           Due: {a.due_date ?? "—"}
@@ -796,46 +841,163 @@ export default function Dashboard() {
                     </div>
 
                     <div className="shrink-0">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => navigate("/app/eho")}
-                      >
+                      <Button size="sm" variant="outline" onClick={() => navigate("/app/eho")}>
                         Open
                       </Button>
                     </div>
                   </div>
                 );
               })}
-
-              {ehoActions.length > 12 ? (
-                <div className="text-xs text-muted-foreground pt-2">
-                  Showing 12 of {ehoActions.length}.
-                </div>
-              ) : null}
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Recently completed corrective actions */}
+      {/* Incident Actions (OPEN) */}
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FileText className="w-5 h-5" />
+            Incident actions
+            {incidentOpenCount > 0 ? (
+              <Badge variant={incidentOverdueCount > 0 ? "destructive" : "secondary"}>
+                {incidentOverdueCount > 0 ? `${incidentOverdueCount} overdue` : `${incidentOpenCount} open`}
+              </Badge>
+            ) : null}
+          </CardTitle>
+          <CardDescription>Actions raised from Incident / Accident / Near Miss forms.</CardDescription>
+        </CardHeader>
+
+        <CardContent>
+          {loading ? (
+            <div className="text-sm text-muted-foreground">Loading…</div>
+          ) : incidentActions.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No open incident actions ✅</div>
+          ) : (
+            <div className="space-y-2">
+              {incidentActions.slice(0, 12).map((a: any) => {
+                const overdue = isOverdueDateOnly(a.due_date ?? null);
+
+                return (
+                  <div
+                    key={a.id}
+                    className={cn(
+                      "rounded-lg border p-3 flex items-start justify-between gap-3",
+                      overdue ? "border-red-200 bg-red-50" : "border-border"
+                    )}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="font-semibold whitespace-pre-line">
+                          {a.action_text ?? "Incident action"}
+                        </div>
+
+                        {overdue ? (
+                          <Badge variant="destructive">overdue</Badge>
+                        ) : (
+                          <Badge variant="secondary">open</Badge>
+                        )}
+
+                        <Badge variant="outline">{formatRole(a.assigned_role ?? null)}</Badge>
+                      </div>
+
+                      <div className="text-xs text-muted-foreground mt-1">
+                        <span className={cn(overdue && "text-red-600 font-medium")}>
+                          Due: {a.due_date ?? "—"}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 rounded-lg border border-border p-3 bg-muted/20">
+                        <div className="text-xs text-muted-foreground">Completion notes (what was done) *</div>
+                        <Input
+                          className="mt-2"
+                          value={incidentNotes[a.id] ?? ""}
+                          onChange={(e) =>
+                            setIncidentNotes((p) => ({ ...p, [a.id]: e.target.value }))
+                          }
+                          placeholder='e.g. "Risk assessment updated, staff retrained, repair completed."'
+                        />
+
+                        <div className="mt-2 flex items-center justify-end gap-2">
+                          <Button
+                            size="sm"
+                            onClick={() => onCompleteIncident(a.id)}
+                            disabled={incidentCompletingId === a.id}
+                            className="gap-2"
+                          >
+                            {incidentCompletingId === a.id ? "Completing…" : "Save & Complete"}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0">
+                      <Button size="sm" variant="outline" onClick={() => navigate("/app/incidents")}>
+                        Open
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Incident Actions (RECENT DONE) */}
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <History className="w-5 h-5" />
+            Recently completed incident actions
+          </CardTitle>
+          <CardDescription>Latest incident actions marked as done (latest first).</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="text-sm text-muted-foreground">Loading…</div>
+          ) : recentIncidentActions.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No completed incident actions yet.</div>
+          ) : (
+            <div className="space-y-2">
+              {recentIncidentActions.map((a: any) => (
+                <div key={a.id} className="rounded-lg border border-border p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="font-semibold truncate">{a.action_text ?? "Incident action"}</div>
+                    <Badge variant="secondary">
+                      Completed {a.completed_at ? formatDue(a.completed_at) : "—"}
+                    </Badge>
+                  </div>
+
+                  <div className="mt-2 text-sm">
+                    <div className="text-xs text-muted-foreground">What was done</div>
+                    <div className="mt-1 whitespace-pre-line">{a.completed_notes ?? "—"}</div>
+                  </div>
+
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    Due: {a.due_date ?? "—"} • Logged: {a.created_at ? formatDue(a.created_at) : "—"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Recently completed corrective actions (temps) */}
       <Card className="mt-6">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <History className="w-5 h-5" />
             Recently completed actions
           </CardTitle>
-          <CardDescription>
-            Shows what was done when an action was completed (latest first).
-          </CardDescription>
+          <CardDescription>Shows what was done when an action was completed (latest first).</CardDescription>
         </CardHeader>
         <CardContent>
           {loading ? (
             <div className="text-sm text-muted-foreground">Loading…</div>
           ) : recentActions.length === 0 ? (
-            <div className="text-sm text-muted-foreground">
-              No completed actions yet.
-            </div>
+            <div className="text-sm text-muted-foreground">No completed actions yet.</div>
           ) : (
             <div className="space-y-2">
               {recentActions.map((a) => (
@@ -843,32 +1005,24 @@ export default function Dashboard() {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="font-semibold truncate">{a.title}</div>
                     <Badge variant="secondary">
-                      Completed{" "}
-                      {a.action_logged_at ? formatDue(a.action_logged_at) : "—"}
+                      Completed {a.action_logged_at ? formatDue(a.action_logged_at) : "—"}
                     </Badge>
                   </div>
 
                   {a.details ? (
                     <div className="mt-2 text-sm">
-                      <div className="text-xs text-muted-foreground">
-                        What needed doing
-                      </div>
+                      <div className="text-xs text-muted-foreground">What needed doing</div>
                       <div className="mt-1 whitespace-pre-line">{a.details}</div>
                     </div>
                   ) : null}
 
                   <div className="mt-2 text-sm">
-                    <div className="text-xs text-muted-foreground">
-                      What was done
-                    </div>
-                    <div className="mt-1 whitespace-pre-line">
-                      {(a as any).action_completed_notes || "—"}
-                    </div>
+                    <div className="text-xs text-muted-foreground">What was done</div>
+                    <div className="mt-1 whitespace-pre-line">{(a as any).action_completed_notes || "—"}</div>
                   </div>
 
                   <div className="mt-2 text-xs text-muted-foreground">
-                    Original due: {formatDue(a.due_at)} • Logged:{" "}
-                    {formatDue(a.action_logged_at)}
+                    Original due: {formatDue(a.due_at)} • Logged: {formatDue(a.action_logged_at)}
                   </div>
                 </div>
               ))}
@@ -894,33 +1048,22 @@ export default function Dashboard() {
           ) : (
             <>
               <div className="flex flex-wrap items-center gap-2">
-                <Badge
-                  variant={tempsKpis.assetsOk ? "default" : "destructive"}
-                  className="gap-2"
-                >
+                <Badge variant={tempsKpis.assetsOk ? "default" : "destructive"} className="gap-2">
                   <Snowflake className="w-4 h-4" />
-                  Assets temps {tempsKpis.assetRecorded} /{" "}
-                  {tempsKpis.targetAssetTemps}
+                  Assets temps {tempsKpis.assetRecorded} / {tempsKpis.targetAssetTemps}
                 </Badge>
 
-                <Badge
-                  variant={tempsKpis.foodOk ? "secondary" : "destructive"}
-                  className="gap-2"
-                >
+                <Badge variant={tempsKpis.foodOk ? "secondary" : "destructive"} className="gap-2">
                   <Utensils className="w-4 h-4" />
                   Food temps {tempsKpis.foodRecorded} / {tempsKpis.targetFoodTemps}
                 </Badge>
 
-                <Badge variant="outline">
-                  Active cold assets: {tempsKpis.assetCount}
-                </Badge>
+                <Badge variant="outline">Active cold assets: {tempsKpis.assetCount}</Badge>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="rounded-lg border border-border p-3">
-                  <div className="text-xs text-muted-foreground">
-                    AM window (00:00 → 14:00)
-                  </div>
+                  <div className="text-xs text-muted-foreground">AM window (00:00 → 14:00)</div>
                   <div className="mt-1 flex items-center justify-between">
                     <div className="font-semibold">Coverage</div>
                     <Badge variant={tempsKpis.amOk ? "default" : "destructive"}>
@@ -933,9 +1076,7 @@ export default function Dashboard() {
                 </div>
 
                 <div className="rounded-lg border border-border p-3">
-                  <div className="text-xs text-muted-foreground">
-                    PM window (14:00 → 02:00)
-                  </div>
+                  <div className="text-xs text-muted-foreground">PM window (14:00 → 02:00)</div>
                   <div className="mt-1 flex items-center justify-between">
                     <div className="font-semibold">Coverage</div>
                     <Badge variant={tempsKpis.pmOk ? "default" : "destructive"}>
@@ -990,12 +1131,12 @@ export default function Dashboard() {
                   />
                 ))}
 
-                {(summary?.overdue?.length ?? 0) === 0 &&
+                (summary?.overdue?.length ?? 0) === 0 &&
                   (summary?.dueToday?.length ?? 0) === 0 && (
                     <div className="text-sm text-muted-foreground">
                       Nothing due right now. You’re on track ✅
                     </div>
-                  )}
+                  )
               </div>
             )}
           </CardContent>
@@ -1019,14 +1160,9 @@ export default function Dashboard() {
                     className="flex items-center justify-between gap-3 rounded-lg border border-border p-3"
                   >
                     <div className="min-w-0">
-                      <div className="font-semibold truncate">
-                        {r.template_name ?? "Checklist"}
-                      </div>
+                      <div className="font-semibold truncate">{r.template_name ?? "Checklist"}</div>
                       <div className="text-xs text-muted-foreground">
-                        Completed{" "}
-                        {r.completed_at
-                          ? new Date(r.completed_at).toLocaleString()
-                          : "—"}
+                        Completed {r.completed_at ? new Date(r.completed_at).toLocaleString() : "—"}
                       </div>
                     </div>
                     <Badge variant="secondary">done</Badge>
@@ -1075,11 +1211,7 @@ function StatCard(props: {
       </div>
       <div className="mt-2 text-3xl font-extrabold">{loading ? "—" : value}</div>
       <div className="mt-1 text-xs text-muted-foreground">
-        {tone === "danger"
-          ? "Needs action"
-          : tone === "warn"
-          ? "Due today"
-          : "Good progress"}
+        {tone === "danger" ? "Needs action" : tone === "warn" ? "Due today" : "Good progress"}
       </div>
     </div>
   );
@@ -1105,12 +1237,7 @@ function RunRow(props: {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="font-semibold truncate">{title}</div>
-          <div
-            className={cn(
-              "text-xs",
-              tone === "danger" ? "text-red-600" : "text-muted-foreground"
-            )}
-          >
+          <div className={cn("text-xs", tone === "danger" ? "text-red-600" : "text-muted-foreground")}>
             {subtitle}
           </div>
         </div>

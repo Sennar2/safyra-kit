@@ -1,113 +1,90 @@
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { useTenant } from "@/lib/tenantContext";
-import { listIncidents, type IncidentRow } from "@/lib/incidents";
+// src/lib/incidents.ts
+import { supabase } from "@/integrations/supabase/client";
 
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { AlertTriangle, Plus, Search } from "lucide-react";
+export type IncidentType = "incident" | "accident" | "near_miss";
+export type IncidentStatus = "open" | "closed";
 
-function typeBadge(t: IncidentRow["type"]) {
-  if (t === "accident") return <Badge variant="destructive">Accident</Badge>;
-  if (t === "near_miss") return <Badge variant="secondary">Near miss</Badge>;
-  return <Badge variant="outline">Incident</Badge>;
+export type IncidentRow = {
+  id: string;
+  company_id: string;
+  site_id: string;
+
+  title: string;
+  type: IncidentType;
+  status: IncidentStatus;
+
+  occurred_at: string; // required by Incidents.tsx page
+  location: string | null;
+  reported_by: string | null;
+  description: string | null;
+
+  created_at?: string;
+};
+
+export async function listIncidents(companyId: string, siteId: string, limit = 80) {
+  const { data, error } = await supabase
+    .from("incidents")
+    .select(
+      "id, company_id, site_id, title, type, status, occurred_at, location, reported_by, description, created_at"
+    )
+    .eq("company_id", companyId)
+    .eq("site_id", siteId)
+    .order("occurred_at", { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+  return (data ?? []) as IncidentRow[];
 }
 
-export default function Incidents() {
-  const nav = useNavigate();
-  const { activeCompanyId, activeSiteId } = useTenant();
+// =======================================================
+// Incident Actions (Dashboard depends on these)
+// =======================================================
 
-  const [loading, setLoading] = useState(true);
-  const [rows, setRows] = useState<IncidentRow[]>([]);
-  const [q, setQ] = useState("");
+export type IncidentActionRow = {
+  id: string;
+  company_id: string;
+  site_id: string;
+  incident_id: string;
 
-  const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    if (!s) return rows;
-    return rows.filter((r) =>
-      [r.title, r.location ?? "", r.reported_by ?? "", r.description ?? ""]
-        .join(" ")
-        .toLowerCase()
-        .includes(s)
-    );
-  }, [rows, q]);
+  action_text: string;
+  due_date: string | null; // date-only
+  status: "open" | "completed" | "cancelled";
 
-  useEffect(() => {
-    (async () => {
-      if (!activeCompanyId || !activeSiteId) return;
-      setLoading(true);
-      try {
-        const data = await listIncidents(activeCompanyId, activeSiteId, 80);
-        setRows(data);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [activeCompanyId, activeSiteId]);
+  assigned_role: string | null;
 
-  return (
-    <div className="p-6 space-y-6 max-w-6xl">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Incidents</h1>
-          <p className="text-muted-foreground">Log incidents, accidents and near-misses with actions + evidence.</p>
-        </div>
+  action_completed_notes: string | null;
+  action_completed_at: string | null;
 
-        <Button onClick={() => nav("/app/incidents/new")} className="gap-2">
-          <Plus className="w-4 h-4" />
-          New
-        </Button>
-      </div>
+  created_at: string;
+};
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Register</CardTitle>
-          <CardDescription>Latest first. Click an entry to view actions and attachments.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-center gap-2">
-            <Search className="w-4 h-4 text-muted-foreground" />
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search title, location, reporter…" />
-          </div>
+export async function listOpenIncidentActions(companyId: string, siteId: string, limit = 50) {
+  const { data, error } = await supabase
+    .from("incident_actions")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("site_id", siteId)
+    .eq("status", "open")
+    .order("due_date", { ascending: true, nullsFirst: false })
+    .limit(limit);
 
-          {loading ? (
-            <div className="text-sm text-muted-foreground">Loading…</div>
-          ) : filtered.length === 0 ? (
-            <div className="rounded-lg border p-4 text-sm text-muted-foreground flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4" />
-              No incidents logged yet.
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {filtered.map((r) => (
-                <button
-                  key={r.id}
-                  type="button"
-                  onClick={() => nav(`/app/incidents/${r.id}`)}
-                  className="w-full text-left rounded-lg border border-border p-3 hover:bg-muted/40 transition"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="font-semibold truncate">{r.title}</div>
-                        {typeBadge(r.type)}
-                        <Badge variant={r.status === "open" ? "secondary" : "outline"}>{r.status}</Badge>
-                      </div>
-                      <div className="text-xs text-muted-foreground mt-1">
-                        {new Date(r.occurred_at).toLocaleString()}
-                        {r.location ? ` • ${r.location}` : ""}
-                        {r.reported_by ? ` • Reported by ${r.reported_by}` : ""}
-                      </div>
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
+  if (error) throw error;
+  return (data ?? []) as IncidentActionRow[];
+}
+
+export async function completeIncidentAction(actionId: string, notes: string) {
+  const { data: auth } = await supabase.auth.getUser();
+  const userId = auth?.user?.id ?? null;
+
+  const { error } = await supabase
+    .from("incident_actions")
+    .update({
+      status: "completed",
+      action_completed_notes: notes,
+      action_completed_at: new Date().toISOString(),
+      action_completed_by: userId,
+    })
+    .eq("id", actionId);
+
+  if (error) throw error;
 }
