@@ -15,13 +15,33 @@ import {
 } from "@/lib/incidents";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { ArrowLeft, Paperclip, CheckCircle2, AlertTriangle, Upload, Save } from "lucide-react";
+import {
+  ArrowLeft,
+  Paperclip,
+  CheckCircle2,
+  AlertTriangle,
+  Upload,
+  Save,
+  Download,
+} from "lucide-react";
 
 const ASSIGNEE_ROLES = [
   { value: "head_office", label: "Head Office" },
@@ -61,7 +81,10 @@ function typeBadge(t: IncidentRow["type"]) {
   return <Badge variant="outline">Incident</Badge>;
 }
 
-function templateKindBadge(tpl: IncidentTemplateRow | null, companyId: string | null) {
+function templateKindBadge(
+  tpl: IncidentTemplateRow | null,
+  companyId: string | null
+) {
   if (!tpl) return null;
   const isLegal = tpl.company_id === null && tpl.is_legally_approved;
   const isCompany = !!companyId && tpl.company_id === companyId;
@@ -71,17 +94,16 @@ function templateKindBadge(tpl: IncidentTemplateRow | null, companyId: string | 
       <Badge variant={isLegal ? "secondary" : "outline"}>
         {isLegal ? "Legally approved template" : isCompany ? "Company template" : "Template"}
       </Badge>
-      <span className="text-xs text-muted-foreground truncate max-w-[360px]">{tpl.name}</span>
+      <span className="text-xs text-muted-foreground truncate max-w-[360px]">
+        {tpl.name}
+      </span>
     </div>
   );
 }
 
 /**
- * Clickable body map field (simple but effective).
+ * Clickable body map field.
  * Stores region key into form_data[fieldKey].
- *
- * If you want a more detailed anatomical SVG later, we can swap this component
- * while keeping the exact same data stored in form_data.
  */
 function BodyMapField(props: {
   label: string;
@@ -118,17 +140,16 @@ function BodyMapField(props: {
           Back
         </Button>
 
-        {value ? <Badge variant="secondary">Selected: {value.replaceAll("_", " ")}</Badge> : null}
+        {value ? (
+          <Badge variant="secondary">Selected: {value.replaceAll("_", " ")}</Badge>
+        ) : null}
       </div>
 
-      {/* Simple clickable “map” area + list */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div className="rounded-lg border p-3">
           <div className="text-xs text-muted-foreground mb-2">Click an area</div>
 
-          {/* Simple silhouette-ish SVG with clickable zones */}
           <svg viewBox="0 0 220 420" className="w-full max-w-[260px] mx-auto">
-            {/* body outline */}
             <path
               d="M110 20
                  C95 20 85 32 85 45
@@ -164,7 +185,6 @@ function BodyMapField(props: {
               strokeWidth="2"
             />
 
-            {/* clickable zones (simple rectangles/circles) */}
             {[
               { key: `${side}_head`, x: 95, y: 22, w: 30, h: 30 },
               { key: `${side}_neck`, x: 100, y: 55, w: 20, h: 15 },
@@ -187,7 +207,6 @@ function BodyMapField(props: {
               { key: `${side}_upper_back`, x: 90, y: 95, w: 40, h: 35 },
               { key: `${side}_lower_back`, x: 92, y: 135, w: 36, h: 35 },
             ]
-              // only show zones that exist in regions list
               .filter((z) => regions.some((r) => r.key === z.key))
               .map((z) => {
                 const selected = value === z.key;
@@ -212,7 +231,7 @@ function BodyMapField(props: {
           </svg>
 
           <div className="text-xs text-muted-foreground mt-2">
-            Tip: click on the diagram or choose from the list.
+            Tip: click the diagram or pick from the list.
           </div>
         </div>
 
@@ -245,6 +264,13 @@ function BodyMapField(props: {
   );
 }
 
+function isFieldVisible(field: any, formData: Record<string, any>) {
+  if (!field?.show_if) return true;
+  const depKey = field.show_if.key;
+  const eq = field.show_if.equals;
+  return formData?.[depKey] === eq;
+}
+
 export default function IncidentDetail() {
   const nav = useNavigate();
   const { id } = useParams();
@@ -256,38 +282,47 @@ export default function IncidentDetail() {
   const [attachments, setAttachments] = useState<AttachmentRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
-  // Template
   const [template, setTemplate] = useState<IncidentTemplateRow | null>(null);
 
-  // form state (incident.form_data)
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
 
-  // complete notes per action
   const [completeNotes, setCompleteNotes] = useState<Record<string, string>>({});
   const [completingId, setCompletingId] = useState<string | null>(null);
 
-  // add new action inline
   const [newActionText, setNewActionText] = useState("");
-  const [newActionRole, setNewActionRole] = useState<AssigneeRole>("restaurant_manager");
+  const [newActionRole, setNewActionRole] =
+    useState<AssigneeRole>("restaurant_manager");
   const [newActionDue, setNewActionDue] = useState<string>("");
 
-  // upload
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
 
-  const openActions = useMemo(() => actions.filter((a) => a.status === "open"), [actions]);
-  const completedActions = useMemo(() => actions.filter((a) => a.status === "completed"), [actions]);
+  const openActions = useMemo(
+    () => actions.filter((a) => a.status === "open"),
+    [actions]
+  );
+  const completedActions = useMemo(
+    () => actions.filter((a) => a.status === "completed"),
+    [actions]
+  );
 
-  
+  const schemaSections = useMemo(() => {
+    return (template?.schema?.sections ?? []) as any[];
+  }, [template]);
+
   const load = async () => {
     if (!id) return;
     setErr(null);
     setLoading(true);
 
     try {
-      const [inc, acts] = await Promise.all([getIncident(id), listIncidentActions(id)]);
+      const [inc, acts] = await Promise.all([
+        getIncident(id),
+        listIncidentActions(id),
+      ]);
+
       setIncident(inc);
       setActions(acts);
 
@@ -295,22 +330,17 @@ export default function IncidentDetail() {
       setFormData(initialForm);
       setDirty(false);
 
-      // Load template:
-      // 1) If incident has template_id -> load that template
-      // 2) Else: pick template by incident type (company override wins) if companyId exists
       let tpl: IncidentTemplateRow | null = null;
 
       if (inc.template_id) {
         tpl = await getIncidentTemplateById(inc.template_id);
       } else if (activeCompanyId) {
         const candidates = await listIncidentTemplates(activeCompanyId, inc.type);
-        // template_key is same as type
         tpl = candidates.find((t) => t.template_key === inc.type) ?? (candidates[0] ?? null);
       }
 
       setTemplate(tpl);
 
-      // attachments
       const { data: atts, error: attErr } = await supabase
         .from("form_attachments")
         .select("id, filename, mime_type, path, created_at")
@@ -336,7 +366,7 @@ export default function IncidentDetail() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, activeCompanyId]);
 
   function setField(key: string, value: any) {
     setFormData((p) => ({ ...p, [key]: value }));
@@ -347,17 +377,55 @@ export default function IncidentDetail() {
     if (!incident) return;
     setSaving(true);
     setErr(null);
+
     try {
       await updateIncident(incident.id, {
         form_data: formData,
-        // keep template_id if template loaded and not already set
         template_id: incident.template_id ?? template?.id ?? null,
       } as any);
+
       await load();
     } catch (e: any) {
       setErr(e?.message ?? "Failed to save form");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function downloadIncidentPdf() {
+    if (!id) return;
+    setErr(null);
+
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/incident-report-pdf`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ incident_id: id }),
+        }
+      );
+
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error ?? `PDF failed (${res.status})`);
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Safyra_Incident_${id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to download PDF");
     }
   }
 
@@ -423,10 +491,12 @@ export default function IncidentDetail() {
         const safeName = f.name.replace(/[^\w.\-() ]+/g, "_");
         const path = `company/${activeCompanyId}/site/${activeSiteId}/incidents/${incident.id}/${Date.now()}_${safeName}`;
 
-        const { error: upErr } = await supabase.storage.from("compliance").upload(path, f, {
-          upsert: false,
-          contentType: f.type || undefined,
-        });
+        const { error: upErr } = await supabase.storage
+          .from("compliance")
+          .upload(path, f, {
+            upsert: false,
+            contentType: f.type || undefined,
+          });
         if (upErr) throw upErr;
 
         const { error: metaErr } = await supabase.from("form_attachments").insert({
@@ -451,12 +521,157 @@ export default function IncidentDetail() {
   }
 
   async function openAttachment(path: string) {
-    const { data, error } = await supabase.storage.from("compliance").createSignedUrl(path, 60);
+    const { data, error } = await supabase.storage
+      .from("compliance")
+      .createSignedUrl(path, 60);
     if (error) {
       setErr(error.message);
       return;
     }
     window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  }
+
+  function renderField(f: any) {
+    if (!isFieldVisible(f, formData)) return null;
+
+    const rawValue = formData?.[f.key];
+    const value = rawValue ?? "";
+
+    // YESNO
+    if (f.type === "yesno") {
+      const current = rawValue === true ? "yes" : rawValue === false ? "no" : "unset";
+
+      return (
+        <div key={f.key} className="space-y-2">
+          <div className="text-sm font-medium">
+            {f.label} {f.required ? <span className="text-red-600">*</span> : null}
+          </div>
+
+          <Select
+            value={current}
+            onValueChange={(v) =>
+              setField(f.key, v === "yes" ? true : v === "no" ? false : null)
+            }
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Select…" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="unset">Not set</SelectItem>
+              <SelectItem value="yes">Yes</SelectItem>
+              <SelectItem value="no">No</SelectItem>
+            </SelectContent>
+          </Select>
+
+          {f.help ? <div className="text-xs text-muted-foreground">{f.help}</div> : null}
+        </div>
+      );
+    }
+
+    // TEXTAREA
+    if (f.type === "textarea") {
+      return (
+        <div key={f.key} className="space-y-2 md:col-span-2">
+          <div className="text-sm font-medium">
+            {f.label} {f.required ? <span className="text-red-600">*</span> : null}
+          </div>
+          <Textarea
+            value={String(value ?? "")}
+            onChange={(e) => setField(f.key, e.target.value)}
+            placeholder={f.placeholder ?? ""}
+          />
+          {f.help ? <div className="text-xs text-muted-foreground">{f.help}</div> : null}
+        </div>
+      );
+    }
+
+    // BODY MAP
+    if (f.type === "body_map") {
+      return (
+        <div key={f.key} className="md:col-span-2">
+          <BodyMapField
+            label={f.label}
+            value={(formData?.[f.key] ?? null) as any}
+            onChange={(v) => setField(f.key, v)}
+            regions={f.regions ?? []}
+          />
+        </div>
+      );
+    }
+
+    // SELECT / RADIO
+    if (f.type === "select" || f.type === "radio") {
+      const options = Array.isArray(f.options) ? f.options : [];
+      const current = String(value ?? "unset") || "unset";
+
+      return (
+        <div key={f.key} className="space-y-2">
+          <div className="text-sm font-medium">
+            {f.label} {f.required ? <span className="text-red-600">*</span> : null}
+          </div>
+
+          <Select value={current} onValueChange={(v) => setField(f.key, v === "unset" ? null : v)}>
+            <SelectTrigger>
+              <SelectValue placeholder="Select…" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="unset">Not set</SelectItem>
+              {options.map((o: any) => (
+                <SelectItem key={String(o.value)} value={String(o.value)}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {f.help ? <div className="text-xs text-muted-foreground">{f.help}</div> : null}
+        </div>
+      );
+    }
+
+    // DEFAULT INPUT
+    const inputType =
+      f.type === "date"
+        ? "date"
+        : f.type === "time"
+        ? "time"
+        : f.type === "datetime"
+        ? "datetime-local"
+        : f.type === "email"
+        ? "email"
+        : f.type === "tel"
+        ? "tel"
+        : f.type === "number"
+        ? "number"
+        : "text";
+
+    return (
+      <div key={f.key} className="space-y-2">
+        <div className="text-sm font-medium">
+          {f.label} {f.required ? <span className="text-red-600">*</span> : null}
+        </div>
+        <Input
+          type={inputType}
+          value={
+            inputType === "number"
+              ? rawValue === null || rawValue === undefined
+                ? ""
+                : String(rawValue)
+              : String(value ?? "")
+          }
+          onChange={(e) => {
+            if (inputType === "number") {
+              const v = e.target.value;
+              setField(f.key, v === "" ? null : Number(v));
+            } else {
+              setField(f.key, e.target.value);
+            }
+          }}
+          placeholder={f.placeholder ?? ""}
+        />
+        {f.help ? <div className="text-xs text-muted-foreground">{f.help}</div> : null}
+      </div>
+    );
   }
 
   if (loading) {
@@ -470,13 +685,13 @@ export default function IncidentDetail() {
           <ArrowLeft className="w-4 h-4" />
           Back
         </Button>
-        <div className="rounded-lg border p-4 text-sm text-muted-foreground">Unable to load incident.</div>
+        <div className="rounded-lg border p-4 text-sm text-muted-foreground">
+          Unable to load incident.
+        </div>
         {err ? <div className="text-sm text-red-700">{err}</div> : null}
       </div>
     );
   }
-
-  const schemaSections = (template?.schema?.sections ?? []) as any[];
 
   return (
     <div className="p-6 space-y-6 max-w-6xl">
@@ -485,8 +700,11 @@ export default function IncidentDetail() {
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-2xl font-semibold truncate">{incident.title}</h1>
             {typeBadge(incident.type)}
-            <Badge variant={incident.status === "open" ? "secondary" : "outline"}>{incident.status}</Badge>
+            <Badge variant={incident.status === "open" ? "secondary" : "outline"}>
+              {incident.status}
+            </Badge>
           </div>
+
           <div className="text-sm text-muted-foreground">
             Occurred: {formatDateTime(incident.occurred_at)}
             {incident.location ? ` • ${incident.location}` : ""}
@@ -496,17 +714,18 @@ export default function IncidentDetail() {
           {templateKindBadge(template, activeCompanyId ?? null)}
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap justify-end">
           <Button variant="outline" onClick={() => nav("/app/incidents")} className="gap-2">
             <ArrowLeft className="w-4 h-4" />
             Back
           </Button>
 
-          <Button
-            onClick={saveForm}
-            disabled={saving || !dirty}
-            className="gap-2"
-          >
+          <Button variant="outline" onClick={downloadIncidentPdf} className="gap-2">
+            <Download className="w-4 h-4" />
+            PDF
+          </Button>
+
+          <Button onClick={saveForm} disabled={saving || !dirty} className="gap-2">
             <Save className="w-4 h-4" />
             {saving ? "Saving…" : dirty ? "Save" : "Saved"}
           </Button>
@@ -514,7 +733,9 @@ export default function IncidentDetail() {
       </div>
 
       {err ? (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{err}</div>
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {err}
+        </div>
       ) : null}
 
       {/* Template-driven form */}
@@ -522,149 +743,31 @@ export default function IncidentDetail() {
         <CardHeader>
           <CardTitle className="text-base">Incident form</CardTitle>
           <CardDescription>
-            This form is driven by the selected template (legally approved or your company version).
+            Driven by the selected template (legal or your company version).
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           {!template ? (
             <div className="text-sm text-muted-foreground">
-              No template found for this incident type. Seed the legal templates in <code>incident_templates</code> and/or set <code>incidents.template_id</code>.
+              No template found for this incident type.
             </div>
           ) : schemaSections.length === 0 ? (
             <div className="text-sm text-muted-foreground">Template schema has no sections.</div>
           ) : (
             schemaSections.map((sec, idx) => (
-              <div key={`${sec.title ?? "section"}-${idx}`} className="rounded-lg border p-4 space-y-4">
+              <div
+                key={`${sec.title ?? "section"}-${idx}`}
+                className="rounded-lg border p-4 space-y-4"
+              >
                 <div>
                   <div className="font-semibold">{sec.title}</div>
-                  {sec.description ? <div className="text-sm text-muted-foreground">{sec.description}</div> : null}
+                  {sec.description ? (
+                    <div className="text-sm text-muted-foreground">{sec.description}</div>
+                  ) : null}
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {(sec.fields ?? []).map((f: any) => {
-                    // 🔥 Conditional visibility
-if (f.show_if) {
-  const currentValue = formData?.[f.show_if.key];
-  if (currentValue !== f.show_if.equals) {
-    return null;
-  }
-}
-                    const value = formData?.[f.key] ?? "";
-
-                    // YES/NO as select for simplicity (buttons are also possible)
-                    if (f.type === "yesno") {
-                      return (
-                        <div key={f.key} className="space-y-2">
-                          <div className="text-sm font-medium">
-                            {f.label} {f.required ? <span className="text-red-600">*</span> : null}
-                          </div>
-                          <Select
-                            value={value === true ? "yes" : value === false ? "no" : ""}
-                            onValueChange={(v) => setField(f.key, v === "yes" ? true : v === "no" ? false : null)}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select…" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="yes">Yes</SelectItem>
-                              <SelectItem value="no">No</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          {f.help ? <div className="text-xs text-muted-foreground">{f.help}</div> : null}
-                        </div>
-                      );
-                    }
-
-                    if (f.type === "textarea") {
-                      return (
-                        <div key={f.key} className="space-y-2 md:col-span-2">
-                          <div className="text-sm font-medium">
-                            {f.label} {f.required ? <span className="text-red-600">*</span> : null}
-                          </div>
-                          <Textarea
-                            value={value ?? ""}
-                            onChange={(e) => setField(f.key, e.target.value)}
-                            placeholder={f.placeholder ?? ""}
-                          />
-                          {f.help ? <div className="text-xs text-muted-foreground">{f.help}</div> : null}
-                        </div>
-                      );
-                    }
-
-                    if (f.type === "body_map") {
-                      return (
-                        <div key={f.key} className="md:col-span-2">
-                          <BodyMapField
-                            label={f.label}
-                            value={formData?.[f.key] ?? null}
-                            onChange={(v) => setField(f.key, v)}
-                            regions={f.regions ?? []}
-                          />
-                        </div>
-                      );
-                    }
-
-                    if (f.type === "select" || f.type === "radio") {
-                      const options = Array.isArray(f.options) ? f.options : [];
-                      return (
-                        <div key={f.key} className="space-y-2">
-                          <div className="text-sm font-medium">
-                            {f.label} {f.required ? <span className="text-red-600">*</span> : null}
-                          </div>
-                          <Select value={String(value ?? "")} onValueChange={(v) => setField(f.key, v)}>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select…" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {options.map((o: any) => (
-                                <SelectItem key={o.value} value={String(o.value)}>
-                                  {o.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          {f.help ? <div className="text-xs text-muted-foreground">{f.help}</div> : null}
-                        </div>
-                      );
-                    }
-
-                    const visible =
-  !f.show_if ||
-  (formData?.[f.show_if.key] === f.show_if.equals);
-
-if (!visible) return null;
-
-                    // default inputs by type
-                    const inputType =
-                      f.type === "date"
-                        ? "date"
-                        : f.type === "time"
-                        ? "time"
-                        : f.type === "datetime"
-                        ? "datetime-local"
-                        : f.type === "email"
-                        ? "email"
-                        : f.type === "tel"
-                        ? "tel"
-                        : f.type === "number"
-                        ? "number"
-                        : "text";
-
-                    return (
-                      <div key={f.key} className="space-y-2">
-                        <div className="text-sm font-medium">
-                          {f.label} {f.required ? <span className="text-red-600">*</span> : null}
-                        </div>
-                        <Input
-                          type={inputType}
-                          value={value ?? ""}
-                          onChange={(e) => setField(f.key, inputType === "number" ? Number(e.target.value) : e.target.value)}
-                          placeholder={f.placeholder ?? ""}
-                        />
-                        {f.help ? <div className="text-xs text-muted-foreground">{f.help}</div> : null}
-                      </div>
-                    );
-                  })}
+                  {(sec.fields ?? []).map((f: any) => renderField(f))}
                 </div>
               </div>
             ))
@@ -679,30 +782,35 @@ if (!visible) return null;
           <CardDescription>Assign tasks and complete them with notes (inspection-ready).</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Add action */}
           <div className="rounded-lg border p-3 space-y-3">
             <div className="font-medium">Add action</div>
             <Textarea
               value={newActionText}
               onChange={(e) => setNewActionText(e.target.value)}
-              placeholder="e.g. Replace broken tile, retrain staff on manual handling, update risk assessment…"
+              placeholder="e.g. Replace broken tile, retrain staff on manual handling…"
             />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="space-y-2">
                 <div className="text-sm font-medium">Assigned to</div>
                 <Select value={newActionRole} onValueChange={(v) => setNewActionRole(v as AssigneeRole)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
                   <SelectContent>
                     {ASSIGNEE_ROLES.map((r) => (
-                      <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
+                      <SelectItem key={r.value} value={r.value}>
+                        {r.label}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
+
               <div className="space-y-2">
                 <div className="text-sm font-medium">Due date</div>
                 <Input type="date" value={newActionDue} onChange={(e) => setNewActionDue(e.target.value)} />
               </div>
+
               <div className="flex items-end justify-end">
                 <Button onClick={addAction} disabled={!newActionText.trim()} className="w-full md:w-auto">
                   Add
@@ -711,12 +819,13 @@ if (!visible) return null;
             </div>
           </div>
 
-          {/* Open actions */}
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <AlertTriangle className="w-4 h-4" />
               <div className="font-medium">Open</div>
-              <Badge variant={openActions.length ? "destructive" : "secondary"}>{openActions.length}</Badge>
+              <Badge variant={openActions.length ? "destructive" : "secondary"}>
+                {openActions.length}
+              </Badge>
             </div>
 
             {openActions.length === 0 ? (
@@ -725,7 +834,10 @@ if (!visible) return null;
               openActions.map((a) => {
                 const overdue = isOverdue(a.due_date);
                 return (
-                  <div key={a.id} className={cn("rounded-lg border p-3 space-y-2", overdue && "border-red-200")}>
+                  <div
+                    key={a.id}
+                    className={cn("rounded-lg border p-3 space-y-2", overdue && "border-red-200")}
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="font-semibold whitespace-pre-line">{a.action_text}</div>
@@ -738,7 +850,9 @@ if (!visible) return null;
                           </span>
                         </div>
                       </div>
-                      <Badge variant={overdue ? "destructive" : "secondary"}>{overdue ? "overdue" : "open"}</Badge>
+                      <Badge variant={overdue ? "destructive" : "secondary"}>
+                        {overdue ? "overdue" : "open"}
+                      </Badge>
                     </div>
 
                     <div className="rounded-lg border bg-muted/20 p-3">
@@ -767,7 +881,6 @@ if (!visible) return null;
             )}
           </div>
 
-          {/* Completed actions */}
           <div className="space-y-2 pt-2">
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4" />
