@@ -1,10 +1,16 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { PDFDocument, StandardFonts, rgb } from "https://esm.sh/pdf-lib@1.17.1";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
 
 type Json = Record<string, any>;
 
-const A4 = { w: 595.28, h: 841.89 };
+const A4 = { w: 595, h: 842 };
 const M = 40;
 const LINE = 14;
 
@@ -33,7 +39,7 @@ function titleCase(s: string) {
     .replaceAll("_", " ")
     .split(" ")
     .filter(Boolean)
-    .map((w) => w[0]?.toUpperCase() + w.slice(1))
+    .map((w) => (w[0] ? w[0].toUpperCase() + w.slice(1) : w))
     .join(" ");
 }
 
@@ -60,8 +66,14 @@ type Cursor = { pageIndex: number; x: number; y: number };
 function addPage(doc: PDFDocument, font: any, fontBold: any) {
   const page = doc.addPage([A4.w, A4.h]);
 
-  // Header
-  page.drawText("Safyra", { x: M, y: A4.h - 50, size: 18, font: fontBold, color: rgb(0.1, 0.1, 0.1) });
+  // header
+  page.drawText("Safyra", {
+    x: M,
+    y: A4.h - 50,
+    size: 18,
+    font: fontBold,
+    color: rgb(0.1, 0.1, 0.1),
+  });
   page.drawText("Incident Report", {
     x: M + 70,
     y: A4.h - 46,
@@ -77,7 +89,6 @@ function addPage(doc: PDFDocument, font: any, fontBold: any) {
     color: rgb(0.9, 0.9, 0.9),
   });
 
-  // Footer placeholder (page numbers drawn later)
   return page;
 }
 
@@ -92,23 +103,64 @@ function ensureSpace(doc: PDFDocument, pages: any[], cursor: Cursor, minY: numbe
 }
 
 function h2(page: any, cursor: Cursor, text: string, fontBold: any) {
-  page.drawText(text, { x: cursor.x, y: cursor.y, size: 13, font: fontBold, color: rgb(0.1, 0.1, 0.1) });
+  page.drawText(text, {
+    x: cursor.x,
+    y: cursor.y,
+    size: 13,
+    font: fontBold,
+    color: rgb(0.1, 0.1, 0.1),
+  });
   cursor.y -= 18;
 }
 
+function sectionTitle(page: any, cursor: Cursor, text: string, fontBold: any) {
+  page.drawText(text, {
+    x: cursor.x,
+    y: cursor.y,
+    size: 11,
+    font: fontBold,
+    color: rgb(0.15, 0.15, 0.15),
+  });
+  cursor.y -= 16;
+}
+
 function labelValue(page: any, cursor: Cursor, label: string, value: string, font: any, fontBold: any) {
-  page.drawText(label, { x: cursor.x, y: cursor.y, size: 9, font: fontBold, color: rgb(0.35, 0.35, 0.35) });
-  page.drawText(value || "—", { x: cursor.x + 150, y: cursor.y, size: 9, font, color: rgb(0.15, 0.15, 0.15) });
+  page.drawText(label, {
+    x: cursor.x,
+    y: cursor.y,
+    size: 9,
+    font: fontBold,
+    color: rgb(0.35, 0.35, 0.35),
+  });
+  page.drawText(value || "—", {
+    x: cursor.x + 160,
+    y: cursor.y,
+    size: 9,
+    font,
+    color: rgb(0.15, 0.15, 0.15),
+  });
   cursor.y -= LINE;
 }
 
 function multiline(page: any, cursor: Cursor, label: string, value: string, font: any, fontBold: any) {
-  page.drawText(label, { x: cursor.x, y: cursor.y, size: 9, font: fontBold, color: rgb(0.35, 0.35, 0.35) });
+  page.drawText(label, {
+    x: cursor.x,
+    y: cursor.y,
+    size: 9,
+    font: fontBold,
+    color: rgb(0.35, 0.35, 0.35),
+  });
   cursor.y -= 12;
 
   const lines = wrapText(value, 95);
   for (const ln of lines) {
-    page.drawText(ln, { x: cursor.x, y: cursor.y, size: 9, font, color: rgb(0.15, 0.15, 0.15) });
+    page.drawText(ln, {
+      x: cursor.x,
+      y: cursor.y,
+      size: 9,
+      font,
+      color: rgb(0.15, 0.15, 0.15),
+    });
     cursor.y -= LINE;
   }
   cursor.y -= 6;
@@ -122,14 +174,20 @@ function visibleField(field: any, formData: Json) {
 }
 
 serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   try {
-    if (req.method !== "POST") return new Response("Use POST", { status: 405 });
+    if (req.method !== "POST") {
+      return new Response("Use POST", { status: 405, headers: corsHeaders });
+    }
 
     const { incident_id } = await req.json().catch(() => ({}));
     if (!incident_id) {
       return new Response(JSON.stringify({ error: "incident_id is required" }), {
         status: 400,
-        headers: { "content-type": "application/json" },
+        headers: { ...corsHeaders, "content-type": "application/json" },
       });
     }
 
@@ -138,56 +196,50 @@ serve(async (req) => {
     if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
       return new Response(JSON.stringify({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }), {
         status: 500,
-        headers: { "content-type": "application/json" },
+        headers: { ...corsHeaders, "content-type": "application/json" },
       });
     }
 
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 
-    // Incident (include what you actually store)
-    const { data: incident, error: incErr } = await admin
+    // incident
+    const { data: incident, error: incErr } = await supabase
       .from("incidents")
-      .select(
-        "id, company_id, site_id, title, type, status, occurred_at, location, reported_by, description, immediate_action, template_id, template_name, template_version, template_is_legal, template_snapshot, form_data, created_at"
-      )
+      .select("id, title, type, status, occurred_at, location, reported_by, description, immediate_action, template_id, form_data, created_at")
       .eq("id", incident_id)
       .single();
-
     if (incErr) throw incErr;
 
-    // Actions
-    const { data: actions, error: actErr } = await admin
+    const formData = (incident.form_data ?? {}) as Json;
+
+    // template schema (optional)
+    let template: any = null;
+    if (incident.template_id) {
+      const { data: tpl, error: tplErr } = await supabase
+        .from("incident_templates")
+        .select("id, name, company_id, is_legally_approved, schema")
+        .eq("id", incident.template_id)
+        .single();
+      if (!tplErr) template = tpl;
+    }
+
+    // actions
+    const { data: actions, error: actErr } = await supabase
       .from("incident_actions")
       .select("id, action_text, assigned_role, due_date, status, action_completed_notes, action_completed_at, created_at")
       .eq("incident_id", incident_id)
       .order("due_date", { ascending: true, nullsFirst: false });
-
     if (actErr) throw actErr;
 
-    // Attachments
-    const { data: attachments, error: attErr } = await admin
+    // attachments
+    const { data: attachments, error: attErr } = await supabase
       .from("form_attachments")
-      .select("id, filename, mime_type, path, created_at, uploaded_by")
+      .select("id, filename, mime_type, path, created_at")
       .eq("incident_id", incident_id)
       .order("created_at", { ascending: false });
-
     if (attErr) throw attErr;
 
-    const formData = (incident.form_data ?? {}) as Json;
-
-    // Schema: prefer snapshot (best for audit), else fetch template schema
-    let schema: any = incident.template_snapshot ?? null;
-
-    if (!schema && incident.template_id) {
-      const { data: tpl } = await admin
-        .from("incident_templates")
-        .select("schema")
-        .eq("id", incident.template_id)
-        .single();
-      if (tpl?.schema) schema = tpl.schema;
-    }
-
-    // PDF build
+    // ---- PDF
     const doc = await PDFDocument.create();
     const font = await doc.embedFont(StandardFonts.Helvetica);
     const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
@@ -196,11 +248,9 @@ serve(async (req) => {
     pages.push(addPage(doc, font, fontBold));
     const cursor: Cursor = { pageIndex: 0, x: M, y: A4.h - 95 };
 
-    const page0 = pages[0];
-
-    // ===== Summary
-    h2(page0, cursor, "Summary", fontBold);
+    // Summary
     ensureSpace(doc, pages, cursor, 120, font, fontBold);
+    h2(pages[cursor.pageIndex], cursor, "Summary", fontBold);
 
     labelValue(pages[cursor.pageIndex], cursor, "Incident ID", String(incident.id), font, fontBold);
     labelValue(pages[cursor.pageIndex], cursor, "Type", titleCase(String(incident.type)), font, fontBold);
@@ -218,84 +268,66 @@ serve(async (req) => {
     ensureSpace(doc, pages, cursor, 140, font, fontBold);
     multiline(pages[cursor.pageIndex], cursor, "Immediate action", incident.immediate_action ?? "—", font, fontBold);
 
-    // ===== Template metadata
+    // Template
     ensureSpace(doc, pages, cursor, 140, font, fontBold);
     h2(pages[cursor.pageIndex], cursor, "Template", fontBold);
-    ensureSpace(doc, pages, cursor, 140, font, fontBold);
-
-    labelValue(pages[cursor.pageIndex], cursor, "Template name", incident.template_name ?? "—", font, fontBold);
-    labelValue(
-      pages[cursor.pageIndex],
-      cursor,
-      "Template version",
-      incident.template_version ? String(incident.template_version) : "—",
-      font,
-      fontBold
-    );
-    labelValue(pages[cursor.pageIndex], cursor, "Source", incident.template_is_legal ? "Legal" : "Company", font, fontBold);
+    const tplName = template?.name ?? "—";
+    const tplSource =
+      template?.company_id === null && template?.is_legally_approved ? "Legal" : template ? "Company" : "—";
+    labelValue(pages[cursor.pageIndex], cursor, "Template name", tplName, font, fontBold);
+    labelValue(pages[cursor.pageIndex], cursor, "Source", tplSource, font, fontBold);
     cursor.y -= 6;
 
-    // ===== Form answers
+    // Form answers
     ensureSpace(doc, pages, cursor, 140, font, fontBold);
     h2(pages[cursor.pageIndex], cursor, "Form answers", fontBold);
 
+    const schema = template?.schema ?? null;
+
     if (schema?.sections?.length) {
-      for (const section of schema.sections) {
+      for (const sec of schema.sections) {
         ensureSpace(doc, pages, cursor, 140, font, fontBold);
-        const p = pages[cursor.pageIndex];
+        sectionTitle(pages[cursor.pageIndex], cursor, sec.title ?? "Section", fontBold);
 
-        p.drawText(section.title ?? "Section", {
-          x: cursor.x,
-          y: cursor.y,
-          size: 11,
-          font: fontBold,
-          color: rgb(0.15, 0.15, 0.15),
-        });
-        cursor.y -= 16;
-
-        if (section.description) {
-          const descLines = wrapText(String(section.description), 95);
-          for (const ln of descLines) {
-            ensureSpace(doc, pages, cursor, 120, font, fontBold);
-            pages[cursor.pageIndex].drawText(ln, { x: cursor.x, y: cursor.y, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
-            cursor.y -= LINE;
-          }
-          cursor.y -= 4;
+        if (sec.description) {
+          ensureSpace(doc, pages, cursor, 120, font, fontBold);
+          multiline(pages[cursor.pageIndex], cursor, "Note", String(sec.description), font, fontBold);
         }
 
-        for (const f of section.fields ?? []) {
+        for (const f of sec.fields ?? []) {
           if (!visibleField(f, formData)) continue;
 
           ensureSpace(doc, pages, cursor, 120, font, fontBold);
-          const p2 = pages[cursor.pageIndex];
 
           const label = f.label ?? f.key;
           const raw = formData[f.key];
 
           let value = asText(raw);
 
-          // Special formatting for some types
           if (f.type === "date" && typeof raw === "string") value = safeDate(raw);
           if (f.type === "datetime" && typeof raw === "string") value = safeDateTime(raw);
 
-          // body_map: use region label if possible
           if (f.type === "body_map" && typeof raw === "string" && Array.isArray(f.regions)) {
             const found = f.regions.find((r: any) => r.key === raw);
             value = found?.label ?? raw;
           }
 
-          const isLong = (value ?? "").length > 80 || f.type === "textarea";
-          if (isLong) multiline(p2, cursor, label, value, font, fontBold);
-          else labelValue(p2, cursor, label, value, font, fontBold);
+          const isLong = f.type === "textarea" || (value ?? "").length > 80;
+          if (isLong) multiline(pages[cursor.pageIndex], cursor, label, value, font, fontBold);
+          else labelValue(pages[cursor.pageIndex], cursor, label, value, font, fontBold);
         }
 
-        cursor.y -= 6;
+        cursor.y -= 8;
       }
     } else {
-      ensureSpace(doc, pages, cursor, 140, font, fontBold);
-      multiline(pages[cursor.pageIndex], cursor, "Note", "No template schema snapshot was found for this incident.", font, fontBold);
-
-      // Still print whatever exists in form_data
+      multiline(
+        pages[cursor.pageIndex],
+        cursor,
+        "Note",
+        "No template schema found. Printing raw form_data keys instead.",
+        font,
+        fontBold
+      );
       const keys = Object.keys(formData ?? {}).sort();
       for (const k of keys) {
         ensureSpace(doc, pages, cursor, 120, font, fontBold);
@@ -303,21 +335,34 @@ serve(async (req) => {
       }
     }
 
-    // ===== Actions
+    // Actions
     ensureSpace(doc, pages, cursor, 140, font, fontBold);
     h2(pages[cursor.pageIndex], cursor, "Actions", fontBold);
 
     const actRows = (actions ?? []) as any[];
     if (!actRows.length) {
-      ensureSpace(doc, pages, cursor, 140, font, fontBold);
       multiline(pages[cursor.pageIndex], cursor, "Actions", "No actions recorded.", font, fontBold);
     } else {
       for (const a of actRows) {
         ensureSpace(doc, pages, cursor, 140, font, fontBold);
-        multiline(pages[cursor.pageIndex], cursor, `Action (${titleCase(String(a.status ?? ""))})`, asText(a.action_text), font, fontBold);
+        multiline(
+          pages[cursor.pageIndex],
+          cursor,
+          `Action (${titleCase(String(a.status ?? ""))})`,
+          asText(a.action_text),
+          font,
+          fontBold
+        );
 
         ensureSpace(doc, pages, cursor, 120, font, fontBold);
-        labelValue(pages[cursor.pageIndex], cursor, "Assigned role", a.assigned_role ? titleCase(String(a.assigned_role)) : "—", font, fontBold);
+        labelValue(
+          pages[cursor.pageIndex],
+          cursor,
+          "Assigned role",
+          a.assigned_role ? titleCase(String(a.assigned_role)) : "—",
+          font,
+          fontBold
+        );
         labelValue(pages[cursor.pageIndex], cursor, "Due date", a.due_date ?? "—", font, fontBold);
 
         if (a.status === "completed") {
@@ -329,13 +374,12 @@ serve(async (req) => {
       }
     }
 
-    // ===== Attachments
+    // Attachments
     ensureSpace(doc, pages, cursor, 140, font, fontBold);
     h2(pages[cursor.pageIndex], cursor, "Attachments", fontBold);
 
     const attRows = (attachments ?? []) as any[];
     if (!attRows.length) {
-      ensureSpace(doc, pages, cursor, 140, font, fontBold);
       multiline(pages[cursor.pageIndex], cursor, "Attachments", "No attachments uploaded.", font, fontBold);
     } else {
       for (const f of attRows) {
@@ -356,26 +400,32 @@ serve(async (req) => {
         thickness: 1,
         color: rgb(0.92, 0.92, 0.92),
       });
-      p.drawText(`Page ${i + 1} of ${total}`, { x: A4.w - M - 90, y: 25, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+      p.drawText(`Page ${i + 1} of ${total}`, {
+        x: A4.w - M - 90,
+        y: 25,
+        size: 9,
+        font,
+        color: rgb(0.4, 0.4, 0.4),
+      });
     }
 
     const bytes = await doc.save();
-
     const titleSafe = String(incident.title ?? "incident").replace(/[^\w\- ]+/g, "_").slice(0, 40);
     const fileName = `Safyra_Incident_${titleSafe}_${String(incident.id).slice(0, 8)}.pdf`;
 
     return new Response(bytes, {
       status: 200,
       headers: {
-        "content-type": "application/pdf",
-        "content-disposition": `attachment; filename="${fileName}"`,
+        ...corsHeaders,
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="${fileName}"`,
       },
     });
   } catch (e: any) {
     console.error(e);
     return new Response(JSON.stringify({ error: e?.message ?? "Unknown error" }), {
       status: 500,
-      headers: { "content-type": "application/json" },
+      headers: { ...corsHeaders, "content-type": "application/json" },
     });
   }
 });

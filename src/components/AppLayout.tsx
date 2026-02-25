@@ -15,6 +15,7 @@ import {
   Thermometer,
   Truck,
   Cross,
+  BarChart3,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -41,6 +42,7 @@ const navItems: NavItem[] = [
   { icon: Cross, label: "EHO Visits", path: "/app/eho" },
   { icon: Shield, label: "HACCP", path: "/app/haccp" },
   { icon: GraduationCap, label: "Training", path: "/app/training" },
+  { icon: BarChart3, label: "Reports", path: "/app/reports" },
   { icon: Building2, label: "Locations", path: "/app/sites", adminOnly: true },
   { icon: UsersIcon, label: "Users", path: "/app/users", adminOnly: true },
 ];

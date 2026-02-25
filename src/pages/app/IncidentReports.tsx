@@ -1,201 +1,135 @@
-import { useEffect, useMemo, useState } from "react";
-import { useTenant } from "@/lib/tenantContext";
-import { listIncidentReports, type IncidentReportRow } from "@/lib/incidentReports";
-import type { IncidentType } from "@/lib/incidents";
-
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-function toCsv(rows: IncidentReportRow[]) {
-  const headers = [
-    "occurred_at",
-    "type",
-    "status",
-    "title",
-    "location",
-    "reported_by",
-    "actions_count",
-    "attachments_count",
-  ];
-
-  const escape = (v: any) => {
-    const s = v == null ? "" : String(v);
-    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-    return s;
-  };
-
-  const lines = [
-    headers.join(","),
-    ...rows.map(r =>
-      [
-        r.occurred_at,
-        r.type,
-        r.status,
-        r.title,
-        r.location ?? "",
-        r.reported_by ?? "",
-        (r.actions?.length ?? 0),
-        (r.attachments?.length ?? 0),
-      ].map(escape).join(",")
-    ),
-  ];
-
-  return lines.join("\n");
-}
+type Stats = {
+  total: number;
+  accident: number;
+  near_miss: number;
+  incident: number;
+  open_actions: number;
+  overdue_actions: number;
+};
 
 export default function IncidentReports() {
-  const { activeCompanyId, activeSiteId } = useTenant();
-
   const [loading, setLoading] = useState(false);
-  const [rows, setRows] = useState<IncidentReportRow[]>([]);
-  const [err, setErr] = useState<string | null>(null);
+  const [stats, setStats] = useState<Stats | null>(null);
 
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
-  const [type, setType] = useState<IncidentType | "all">("all");
-  const [status, setStatus] = useState<"open" | "closed" | "all">("all");
+  const [type, setType] = useState<string>("all");
+  const [status, setStatus] = useState<string>("all");
 
-  async function load() {
-    if (!activeCompanyId) return;
+  async function loadStats() {
     setLoading(true);
-    setErr(null);
-    try {
-      const data = await listIncidentReports({
-        companyId: activeCompanyId,
-        siteId: activeSiteId ?? undefined,
-        dateFrom: dateFrom || undefined,
-        dateTo: dateTo || undefined,
-        type,
-        status,
-        limit: 500,
-      });
-      setRows(data);
-    } catch (e: any) {
-      setErr(e?.message ?? "Failed to load reports");
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
+
+    let query = supabase.from("incidents").select("*");
+
+    if (dateFrom) query = query.gte("occurred_at", dateFrom);
+    if (dateTo) query = query.lte("occurred_at", dateTo);
+    if (type !== "all") query = query.eq("type", type);
+    if (status !== "all") query = query.eq("status", status);
+
+    const { data } = await query;
+
+    const total = data?.length ?? 0;
+
+    const accident = data?.filter((i) => i.type === "accident").length ?? 0;
+    const near_miss = data?.filter((i) => i.type === "near_miss").length ?? 0;
+    const incidentCount = data?.filter((i) => i.type === "incident").length ?? 0;
+
+    const { data: actions } = await supabase
+      .from("incident_actions")
+      .select("*");
+
+    const open_actions = actions?.filter((a) => a.status === "open").length ?? 0;
+
+    const overdue_actions =
+      actions?.filter(
+        (a) =>
+          a.status === "open" &&
+          a.due_date &&
+          new Date(a.due_date) < new Date()
+      ).length ?? 0;
+
+    setStats({
+      total,
+      accident,
+      near_miss,
+      incident: incidentCount,
+      open_actions,
+      overdue_actions,
+    });
+
+    setLoading(false);
   }
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeCompanyId, activeSiteId]);
-
-  const counts = useMemo(() => {
-    const open = rows.filter(r => r.status === "open").length;
-    const closed = rows.filter(r => r.status === "closed").length;
-    return { total: rows.length, open, closed };
-  }, [rows]);
-
-  function downloadCsv() {
-    const csv = toCsv(rows);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `incidents_report_${new Date().toISOString().slice(0,10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
+    loadStats();
+  }, []);
 
   return (
     <div className="p-6 space-y-6 max-w-6xl">
-      <div>
-        <h1 className="text-2xl font-semibold">Incident reporting</h1>
-        <p className="text-muted-foreground">Filter and export incidents (inspection-ready).</p>
-      </div>
+      <h1 className="text-2xl font-semibold">Incident Reports Dashboard</h1>
 
-      {err ? <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{err}</div> : null}
-
+      {/* Filters */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Filters</CardTitle>
-          <CardDescription>Use date range, type and status.</CardDescription>
+          <CardTitle>Filters</CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-5 gap-3">
-          <div>
-            <div className="text-sm font-medium">From</div>
-            <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-          </div>
-          <div>
-            <div className="text-sm font-medium">To</div>
-            <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-          </div>
-          <div>
-            <div className="text-sm font-medium">Type</div>
-            <Select value={type} onValueChange={(v) => setType(v as any)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All</SelectItem>
-                <SelectItem value="incident">Incident</SelectItem>
-                <SelectItem value="accident">Accident</SelectItem>
-                <SelectItem value="near_miss">Near miss</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <div className="text-sm font-medium">Status</div>
-            <Select value={status} onValueChange={(v) => setStatus(v as any)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All</SelectItem>
-                <SelectItem value="open">Open</SelectItem>
-                <SelectItem value="closed">Closed</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex items-end gap-2">
-            <Button onClick={load} disabled={loading} className="w-full">
-              {loading ? "Loading…" : "Apply"}
-            </Button>
-          </div>
+        <CardContent className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+          <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
 
-          <div className="md:col-span-5 flex flex-wrap items-center gap-2 pt-2">
-            <Badge variant="secondary">Total {counts.total}</Badge>
-            <Badge variant="secondary">Open {counts.open}</Badge>
-            <Badge variant="secondary">Closed {counts.closed}</Badge>
-            <div className="flex-1" />
-            <Button variant="outline" onClick={downloadCsv} disabled={!rows.length}>
-              Export CSV
-            </Button>
-          </div>
+          <Select value={type} onValueChange={setType}>
+            <SelectTrigger><SelectValue placeholder="Type" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All types</SelectItem>
+              <SelectItem value="incident">Incident</SelectItem>
+              <SelectItem value="accident">Accident</SelectItem>
+              <SelectItem value="near_miss">Near Miss</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Select value={status} onValueChange={setStatus}>
+            <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All status</SelectItem>
+              <SelectItem value="open">Open</SelectItem>
+              <SelectItem value="closed">Closed</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Button onClick={loadStats} disabled={loading}>
+            {loading ? "Loading…" : "Apply Filters"}
+          </Button>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Results</CardTitle>
-          <CardDescription>Latest first.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {!rows.length ? (
-            <div className="text-sm text-muted-foreground">No results.</div>
-          ) : (
-            rows.map((r) => (
-              <div key={r.id} className="rounded-lg border p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="font-semibold">{r.title}</div>
-                  <div className="flex gap-2">
-                    <Badge variant="outline">{r.type}</Badge>
-                    <Badge variant={r.status === "open" ? "secondary" : "outline"}>{r.status}</Badge>
-                  </div>
-                </div>
-                <div className="text-xs text-muted-foreground mt-1">
-                  {new Date(r.occurred_at).toLocaleString()}
-                  {r.location ? ` • ${r.location}` : ""}
-                  {r.reported_by ? ` • Reported by ${r.reported_by}` : ""}
-                  {` • Actions ${r.actions?.length ?? 0} • Attachments ${r.attachments?.length ?? 0}`}
-                </div>
-              </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
+      {/* Stats */}
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <StatCard label="Total Incidents" value={stats.total} />
+          <StatCard label="Accidents" value={stats.accident} />
+          <StatCard label="Near Misses" value={stats.near_miss} />
+          <StatCard label="Open Actions" value={stats.open_actions} />
+          <StatCard label="Overdue Actions" value={stats.overdue_actions} />
+        </div>
+      )}
     </div>
+  );
+}
+
+function StatCard({ label, value }: { label: string; value: number }) {
+  return (
+    <Card>
+      <CardContent className="p-6">
+        <div className="text-sm text-muted-foreground">{label}</div>
+        <div className="text-2xl font-semibold">{value}</div>
+      </CardContent>
+    </Card>
   );
 }

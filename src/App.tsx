@@ -47,6 +47,7 @@ import Login from "@/pages/Login";
 import NoAccess from "@/pages/NoAccess";
 import Hub from "@/pages/Hub";
 import NotFound from "@/pages/NotFound";
+import IncidentReports from "./pages/app/IncidentReports";
 
 
 const queryClient = new QueryClient();
@@ -116,8 +117,9 @@ export default function App() {
                       {/* Other modules */}
                       <Route path="/app/suppliers" element={<Suppliers />} />
                       <Route path="/app/incidents" element={<Incidents />} />
-<Route path="/app/incidents/new" element={<IncidentNew />} />
-<Route path="/app/incidents/:id" element={<IncidentDetail />} />
+                      <Route path="/app/incidents/new" element={<IncidentNew />} />
+                      <Route path="/app/incidents/:id" element={<IncidentDetail />} />
+                      <Route path="/app/reports" element={<IncidentReports />} />
                       <Route path="/app/eho" element={<EhoVisits />} />
                       <Route path="/app/eho/new" element={<EhoVisitNew />} />
                       <Route path="/app/eho/:visitId" element={<EhoVisitDetail />} />

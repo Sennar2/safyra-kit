@@ -720,10 +720,53 @@ export default function IncidentDetail() {
             Back
           </Button>
 
-          <Button variant="outline" onClick={downloadIncidentPdf} className="gap-2">
-            <Download className="w-4 h-4" />
-            PDF
-          </Button>
+<Button
+  variant="outline"
+  className="gap-2"
+  onClick={async () => {
+    if (!incident?.id) return;
+
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/incident-report-pdf`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: token ? `Bearer ${token}` : "",
+          },
+          body: JSON.stringify({ incident_id: incident.id }),
+        }
+      );
+
+      if (!res.ok) {
+        const msg = await res.text();
+        alert(msg || `Failed to generate PDF (${res.status})`);
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Safyra_Incident_${incident.id.slice(0, 8)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error(err);
+      alert(err.message ?? "PDF generation failed");
+    }
+  }}
+>
+  Download PDF
+</Button>
 
           <Button onClick={saveForm} disabled={saving || !dirty} className="gap-2">
             <Save className="w-4 h-4" />
